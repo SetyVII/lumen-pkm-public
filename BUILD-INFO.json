@@ -1,0 +1,29 @@
+{
+  "version": "0.6.0",
+  "date": "2026-10-30",
+  "target": "Linux x86_64",
+  "build_qt": "6.4.2",
+  "acceptance_host_qt": "6.11.2",
+  "desktop_sha256": "95544d89ce0cfb62d5e2bf870e883c668b72551a7335ec9020b9357bd7c53228",
+  "server_image": "sha256:354fd194c425a43fcc0211de2f87c12b0d9eab75a3f6cb3879bf8d66cc07998e",
+  "component_tests": "7/7 PASS",
+  "native_smoke": "PASS (offscreen, servidor personal)",
+  "native_acceptance": "not run in this delivery; last PASS recorded for 0.3",
+  "e2ee": false,
+  "native_acceptance_platform": "Qt offscreen, host Qt 6.11.2",
+  "native_acceptance_api": "disposable 8879 server with separate secrets",
+  "visual_qa": "last PASS for documented components and flows; not pixel equality",
+  "server_migration_0_2_preserved": {
+    "objects": 30,
+    "assets": 6,
+    "original_types": 7,
+    "new_types": 3
+  },
+  "production_readonly_check": {
+    "objects": 49,
+    "health": "ready",
+    "source_of_truth": "lumen-store",
+    "pending": 0
+  },
+  "workspace_reorg": "2026-10-30"
+}

@@ -1,0 +1,19 @@
+{
+  "description": "Synthetic old/new schemas. Each type retains its own fields and relation targets.",
+  "types": [
+    {"id":"fixture-book-modern","name":"Libro moderno","properties":[
+      {"key":"authors","name":"Autores","type":"object","target_type":"person","multiple":true},
+      {"key":"genre","name":"Género","type":"select","options":["Ensayo","Ficción"]},
+      {"key":"reading_line","name":"Línea de lectura","type":"date"}
+    ]},
+    {"id":"fixture-definition","name":"Definición","properties":[
+      {"key":"related","name":"Conceptos relacionados","type":"object","multiple":true}
+    ]}
+  ],
+  "objects": [
+    {"id":"fixture-author","type_id":"person","title":"Autora ficticia","content":"","properties":{},"links":[]},
+    {"id":"fixture-book-legacy","type_id":"book","title":"Libro con autor como texto","content":"","properties":{"author":"Nombre de autor","rating":"4"},"links":[]},
+    {"id":"fixture-book-modern-object","type_id":"fixture-book-modern","title":"Libro con autores relacionados","content":"","properties":{"authors":["fixture-author"],"genre":"Ensayo","reading_line":{"start":"2026-11-01","end":"2026-11-30","include_time":false}},"links":[]},
+    {"id":"fixture-definition-object","type_id":"fixture-definition","title":"Concepto ficticio","content":"Definición de ejemplo","properties":{"related":["fixture-book-modern-object"]},"links":[]}
+  ]
+}

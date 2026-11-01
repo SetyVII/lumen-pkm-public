@@ -1,0 +1,60 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "dev",
+      "displayName": "Desarrollo (Debug + tests)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/../.build/desktop-dev",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "LUMEN_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "test",
+      "displayName": "Pruebas (RelWithDebInfo + tests)",
+      "inherits": "dev",
+      "binaryDir": "${sourceDir}/../.build/desktop-test",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "LUMEN_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Entrega (Release sin tests)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/../.build/desktop-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "LUMEN_BUILD_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "asan",
+      "displayName": "Sanitizadores (ASan + UBSan)",
+      "inherits": "dev",
+      "binaryDir": "${sourceDir}/../.build/desktop-asan",
+      "cacheVariables": {
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev", "configurePreset": "dev" },
+    { "name": "test", "configurePreset": "test" },
+    { "name": "release", "configurePreset": "release" },
+    { "name": "asan", "configurePreset": "asan" }
+  ],
+  "testPresets": [
+    {
+      "name": "test",
+      "configurePreset": "test",
+      "output": { "outputOnFailure": true },
+      "environment": { "QT_QPA_PLATFORM": "offscreen" }
+    }
+  ]
+}

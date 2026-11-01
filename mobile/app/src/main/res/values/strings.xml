@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Lumen</string>
+    <string name="widget_description">Diario visual, tareas y sincronización de Lumen</string>
+</resources>

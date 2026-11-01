@@ -1,0 +1,67 @@
+{
+  "objects": [
+    {
+      "id": "toggle-fixture",
+      "type_id": "note",
+      "title": "Toggles · datos ficticios",
+      "properties": {
+        "blocks": [
+          {
+            "id": "toggle-main",
+            "type": "toggle",
+            "text": "▼ Esto es un toggle",
+            "runs": [
+              {
+                "text": "▼ Esto es un toggle"
+              }
+            ],
+            "children": [
+              {
+                "id": "toggle-body",
+                "type": "paragraph",
+                "text": "Aquí van las cosas dentro del toggle",
+                "runs": [
+                  {
+                    "text": "Aquí van las cosas dentro del toggle"
+                  }
+                ]
+              },
+              {
+                "id": "nested-toggle",
+                "type": "toggle",
+                "text": "▶ Toggle anidado",
+                "runs": [
+                  {
+                    "text": "▶ Toggle anidado"
+                  }
+                ],
+                "children": [
+                  {
+                    "id": "nested-body",
+                    "type": "paragraph",
+                    "text": "Texto anidado editable",
+                    "runs": [
+                      {
+                        "text": "Texto anidado editable"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "outside",
+            "type": "paragraph",
+            "text": "Fuera del toggle",
+            "runs": [
+              {
+                "text": "Fuera del toggle"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

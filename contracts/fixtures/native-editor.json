@@ -1,0 +1,113 @@
+{
+  "objects": [
+    {
+      "id": "fixture-image-a",
+      "type_id": "image",
+      "title": "Imagen A",
+      "properties": {}
+    },
+    {
+      "id": "fixture-image-b",
+      "type_id": "image",
+      "title": "Imagen B",
+      "properties": {}
+    },
+    {
+      "id": "fixture-rich-note",
+      "type_id": "note",
+      "title": "Editor nativo compartido",
+      "content": "Viñeta editada\n￼\nEntre las imágenes\nTexto en cursiva\n```kotlin\nval x = 2\n```\n￼",
+      "links": [
+        "fixture-image-a",
+        "fixture-image-b"
+      ],
+      "properties": {
+        "blocks": [
+          {
+            "id": "block-list",
+            "type": "bullet_list",
+            "text": "Viñeta editada",
+            "runs": [
+              {
+                "text": "Viñeta editada",
+                "bold": true
+              }
+            ],
+            "indent": 2
+          },
+          {
+            "id": "block-image-a",
+            "type": "embed",
+            "text": "￼",
+            "runs": [
+              {
+                "text": "￼",
+                "type": "image",
+                "object_id": "fixture-image-a",
+                "type_id": "image",
+                "href": "lumen://object/fixture-image-a",
+                "image_name": "lumen://image/fixture-image-a",
+                "width": 400,
+                "height": 100
+              }
+            ],
+            "alignment": 132
+          },
+          {
+            "id": "block-heading",
+            "type": "heading",
+            "text": "Entre las imágenes",
+            "runs": [
+              {
+                "text": "Entre las imágenes"
+              }
+            ],
+            "level": 2
+          },
+          {
+            "id": "block-italic",
+            "type": "paragraph",
+            "text": "Texto en cursiva",
+            "runs": [
+              {
+                "text": "Texto en cursiva",
+                "italic": true
+              }
+            ]
+          },
+          {
+            "id": "block-code",
+            "type": "code",
+            "text": "val x = 2",
+            "runs": [
+              {
+                "text": "val x = 2",
+                "code": true
+              }
+            ],
+            "language": "kotlin"
+          },
+          {
+            "id": "block-image-b",
+            "type": "embed",
+            "text": "￼",
+            "runs": [
+              {
+                "text": "￼",
+                "type": "image",
+                "object_id": "fixture-image-b",
+                "type_id": "image",
+                "href": "lumen://object/fixture-image-b",
+                "image_name": "lumen://image/fixture-image-b",
+                "width": 400,
+                "height": 100
+              }
+            ],
+            "alignment": 132
+          }
+        ],
+        "rich_text": null
+      }
+    }
+  ]
+}

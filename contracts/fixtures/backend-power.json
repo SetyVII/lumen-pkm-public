@@ -1,0 +1,6 @@
+{
+  "block_reference": {"type":"embed","id":"reference-example","text":"Source","runs":[{"text":"Source","href":"lumen://block/source-example"}]},
+  "media_types": ["image","pdf","audio","video","file"],
+  "recurrence_rules": [{"mode":"yearly"},{"mode":"weekdays"},{"mode":"last_day"},{"mode":"last_weekday"}],
+  "habit": {"type_id":"habit","title":"Read ten pages","properties":{"habit_start":"2026-10-26","habit_schedule":[1,2,3,4,5],"habit_target":10,"habit_entries":{"2026-10-26":10,"2026-10-27":15}}}
+}

@@ -1,0 +1,272 @@
+{
+  "objects": [
+    {
+      "id": "a",
+      "type_id": "book",
+      "title": "Bosque",
+      "content": "<b>Estudio de árboles</b>",
+      "updated_at": "2026-10-01",
+      "links": [
+        "b"
+      ],
+      "properties": {
+        "pages": 80,
+        "status": "Leyendo",
+        "aliases": [
+          "Bosques del mundo"
+        ],
+        "reading_line": {
+          "start": "2026-11-01",
+          "end": "2026-11-30"
+        }
+      }
+    },
+    {
+      "id": "b",
+      "type_id": "book",
+      "title": "Historia",
+      "content": "Ensayo",
+      "updated_at": "2026-10-02",
+      "properties": {
+        "pages": 120,
+        "status": "Leído"
+      }
+    },
+    {
+      "id": "c",
+      "type_id": "web",
+      "title": "Referencia",
+      "content": "",
+      "updated_at": "2026-10-03",
+      "property_links": [
+        "a"
+      ],
+      "properties": {
+        "url": "https://example.org",
+        "approved": true
+      }
+    },
+    {
+      "id": "j",
+      "type_id": "journal",
+      "title": "Diario",
+      "content": "",
+      "updated_at": "2026-10-04",
+      "properties": {}
+    }
+  ],
+  "cases": [
+    {
+      "name": "nested type, backlinks, numeric coercion",
+      "spec": {
+        "type_id": "book",
+        "filter": {
+          "mode": "and",
+          "rules": [
+            {
+              "field": "properties.pages",
+              "op": "gte",
+              "value": "80"
+            },
+            {
+              "mode": "or",
+              "rules": [
+                {
+                  "field": "backlinks",
+                  "op": "in",
+                  "value": [
+                    "c"
+                  ]
+                },
+                {
+                  "field": "properties.status",
+                  "op": "equals",
+                  "value": "Leído"
+                }
+              ]
+            }
+          ]
+        },
+        "sort": [
+          {
+            "field": "title",
+            "direction": "asc"
+          }
+        ]
+      },
+      "ids": [
+        "a",
+        "b"
+      ]
+    },
+    {
+      "name": "manual order",
+      "spec": {
+        "type_id": "book",
+        "ids": [
+          "b",
+          "a"
+        ],
+        "order": "manual"
+      },
+      "ids": [
+        "b",
+        "a"
+      ]
+    },
+    {
+      "name": "sort overrides manual order",
+      "spec": {
+        "type_id": "book",
+        "ids": [
+          "b",
+          "a"
+        ],
+        "order": "manual",
+        "sort": [
+          {
+            "field": "properties.pages",
+            "direction": "asc"
+          }
+        ]
+      },
+      "ids": [
+        "a",
+        "b"
+      ]
+    },
+    {
+      "name": "limit after sorting",
+      "spec": {
+        "type_id": "book",
+        "sort": [
+          {
+            "field": "properties.pages",
+            "direction": "desc"
+          }
+        ],
+        "limit": 1
+      },
+      "ids": [
+        "b"
+      ]
+    },
+    {
+      "name": "aliases",
+      "spec": {
+        "search": "Bosques del mundo"
+      },
+      "ids": [
+        "a"
+      ]
+    },
+    {
+      "name": "boolean coercion",
+      "spec": {
+        "filter": {
+          "field": "properties.approved",
+          "op": "equals",
+          "value": "sí"
+        }
+      },
+      "ids": [
+        "c"
+      ]
+    },
+    {
+      "name": "missing value",
+      "spec": {
+        "type_id": "book",
+        "filter": {
+          "field": "properties.rating",
+          "op": "empty"
+        }
+      },
+      "ids": [
+        "b",
+        "a"
+      ]
+    },
+    {
+      "name": "property links",
+      "spec": {
+        "filter": {
+          "field": "links",
+          "op": "equals",
+          "value": "a"
+        }
+      },
+      "ids": [
+        "c"
+      ]
+    },
+    {
+      "name": "plain HTML content",
+      "spec": {
+        "search": "Estudio de árboles"
+      },
+      "ids": [
+        "a"
+      ]
+    },
+    {
+      "name": "exclude journals",
+      "spec": {},
+      "ids": [
+        "c",
+        "b",
+        "a"
+      ]
+    },
+    {
+      "name": "negative and text operators",
+      "spec": {
+        "type_id": "book",
+        "filter": {
+          "mode": "and",
+          "rules": [
+            {
+              "field": "title",
+              "op": "not_contains",
+              "value": "historia"
+            },
+            {
+              "field": "title",
+              "op": "starts_with",
+              "value": "bo"
+            },
+            {
+              "field": "title",
+              "op": "ends_with",
+              "value": "que"
+            },
+            {
+              "field": "properties.status",
+              "op": "not_equals",
+              "value": "Leído"
+            }
+          ]
+        }
+      },
+      "ids": [
+        "a"
+      ]
+    },
+    {
+      "name": "structured values ignore JSON key order",
+      "spec": {
+        "filter": {
+          "field": "properties.reading_line",
+          "op": "equals",
+          "value": {
+            "end": "2026-11-30",
+            "start": "2026-11-01"
+          }
+        }
+      },
+      "ids": [
+        "a"
+      ]
+    }
+  ]
+}

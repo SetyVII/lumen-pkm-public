@@ -1,0 +1,50 @@
+# Artefactos de compilación: nunca en Git
+.build/
+desktop/build/
+desktop/build-*/
+desktop/bin/
+extension/dist/
+extension/node_modules/
+mobile/build/
+mobile/app/build/
+mobile/.gradle/
+mobile/.kotlin/
+mobile/local.properties
+*.apk
+
+# Secretos y datos locales
+.secrets/
+server/.secrets/
+server/secrets/
+server/data/
+server/lumen-server
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.enc
+*.log
+node_modules/
+
+# Entorno
+.idea/
+*.iml
+
+# Private local material and credentials must stay outside the public source.
+.env
+.env.*
+!.env.example
+!.env.sample
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.token
+/ops/
+/research/
+/releases/
+/scratch/
+/docs/capacities-audit-2026-10-29/
+/docs/qa/2026-10-29-capacities-audit/

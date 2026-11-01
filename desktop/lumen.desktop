@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Lumen
+Comment=Un espacio personal para pensar y conectar
+Exec=lumen
+Icon=accessories-text-editor
+Terminal=false
+Type=Application
+Categories=Office;Education;
+Keywords=PKM;Objects;Journal;
+StartupNotify=true
+StartupWMClass=Lumen

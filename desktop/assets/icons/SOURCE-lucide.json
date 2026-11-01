@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/lucide-icons/lucide",
+  "tag": "0.339.0",
+  "file": "https://raw.githubusercontent.com/lucide-icons/lucide/0.339.0/icons/package-open.svg",
+  "upstream_sha256": "261a0676ee3db3e5c64a528ac7f81a4893ddb3dfebd0549562f4ef5033757920",
+  "license": "ISC",
+  "modification": "currentColor replaced with neutral #96969f for Qt rendering"
+}

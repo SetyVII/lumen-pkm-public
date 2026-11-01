@@ -1,0 +1,39 @@
+name: lumen-pkm-test
+
+# Servidor desechable para pruebas (8879). Nunca usa la instalación personal.
+# Uso:
+#   LUMEN_TEST_SECRETS_DIR=/ruta/absoluta/con/secrets \
+#   docker compose -f lumen-pkm/sandbox/compose.test.yaml up -d --build
+services:
+  lumen:
+    image: lumen-pkm:test
+    platform: linux/amd64
+    build: ../server
+    restart: "no"
+    ports:
+      - "127.0.0.1:8879:8765"
+    environment:
+      LUMEN_ALLOWED_ORIGINS: ""
+    secrets:
+      - encryption_key
+      - api_token
+    volumes:
+      - lumen_test_data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    stop_grace_period: 20s
+
+secrets:
+  encryption_key:
+    file: ${LUMEN_TEST_SECRETS_DIR:?Define un directorio absoluto de secretos de prueba}/encryption.key
+  api_token:
+    file: ${LUMEN_TEST_SECRETS_DIR:?Define un directorio absoluto de secretos de prueba}/api.token
+
+volumes:
+  lumen_test_data:

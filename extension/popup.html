@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Guardar en Lumen</title>
+  <link rel="stylesheet" href="popup.css">
+  <script src="core.js" defer></script>
+  <script src="popup.js" defer></script>
+</head>
+<body>
+  <aside class="rail" aria-label="Lumen">
+    <div class="brand" aria-label="Lumen">l<span>·</span></div>
+    <button id="capture-tab" class="rail-button selected" title="Capturar enlace" aria-label="Capturar enlace" aria-pressed="true">↗</button>
+    <div class="rail-spacer"></div>
+    <button id="settings-tab" class="rail-button" title="Conexión y privacidad" aria-label="Conexión y privacidad" aria-pressed="false">⚙</button>
+    <div class="rail-foot">L</div>
+  </aside>
+  <main>
+    <header><span class="wordmark">lumen</span><span class="connection-pill" id="connection-pill">Sin conectar</span></header>
+    <section id="capture-panel">
+      <p class="eyebrow">UNA IDEA PARA TU ESPACIO</p>
+      <h1>Guarda lo que<br>te inspira.</h1>
+      <p class="intro">Un enlace, una lectura, algo que volverás a encontrar.</p>
+      <form id="capture-form">
+        <fieldset class="type-picker"><legend class="sr-only">Tipo de objeto</legend>
+          <label><input type="radio" name="type_id" value="web" checked><span><b aria-hidden="true">↗</b> Enlace</span></label>
+          <label><input type="radio" name="type_id" value="book"><span><b aria-hidden="true">▤</b> Libro</span></label>
+        </fieldset>
+        <div class="capture-card">
+          <div class="card-heading"><span class="site-icon" aria-hidden="true">↗</span><span id="site-name">ENLACE WEB</span><span class="tiny-label">Objeto</span></div>
+          <label class="sr-only" for="title">Título</label>
+          <input id="title" name="title" class="title-input" placeholder="Ponle un título" maxlength="300" required autocomplete="off">
+          <label class="sr-only" for="url">Dirección del enlace</label>
+          <input id="url" name="url" class="url-input" placeholder="https://…" type="url" maxlength="4096" required autocomplete="off" spellcheck="false">
+        </div>
+        <label class="field-label" for="selection">Tu nota <span>opcional</span></label>
+        <textarea id="selection" name="selection" placeholder="¿Qué te gustaría recordar de esto?" rows="3" maxlength="12000"></textarea>
+        <label class="journal-row"><input id="journal" type="checkbox" checked><span class="check-mark" aria-hidden="true"></span><span>Añadir también al diario de hoy</span><span class="calendar-icon" aria-hidden="true">▦</span></label>
+        <button id="save-button" class="primary" type="submit"><span id="save-label">Guardar en mi espacio</span><kbd>Ctrl ↵</kbd></button>
+      </form>
+      <p class="privacy-note"><span aria-hidden="true">◇</span> Solo se envía lo que ves aquí a tu servidor.</p>
+    </section>
+    <section id="settings-panel" hidden>
+      <p class="eyebrow">TU ESPACIO, TU SERVIDOR</p><h1>Una conexión<br>privada.</h1>
+      <p class="intro">El token se mantiene durante esta sesión del navegador.</p>
+      <form id="connection-form">
+        <label class="field-label" for="api-url">Dirección de tu servidor</label>
+        <input id="api-url" type="url" value="http://127.0.0.1:8765" required autocomplete="off" spellcheck="false">
+        <label class="field-label" for="api-token">Token de acceso</label>
+        <input id="api-token" type="password" placeholder="Pega el token de Lumen" required autocomplete="off" spellcheck="false" maxlength="4096">
+        <p class="hint">HTTPS para servidores remotos. HTTP solo en tu propio equipo.</p>
+        <button class="primary" id="connect-button" type="submit">Conectar durante esta sesión <span aria-hidden="true">→</span></button>
+      </form>
+      <button id="disconnect-button" class="text-button" type="button" hidden>Desconectar y olvidar el token</button>
+      <details class="connection-details"><summary>Configurar el origen permitido</summary><p>Incluye este origen exacto en <code>LUMEN_ALLOWED_ORIGINS</code> de tu servidor:</p><input id="extension-origin" readonly aria-label="Origen de la extensión" spellcheck="false"><p>El permiso del navegador solo se solicita para el servidor que eliges.</p></details>
+      <p class="privacy-note">Sin analítica ni sincronización del token. Tu servidor procesa las capturas; este MVP no ofrece cifrado de extremo a extremo.</p>
+    </section>
+    <div id="status" role="status" aria-live="polite" hidden></div>
+    <footer><span id="footer-context">Un lugar para pensar.</span><span>Esc para cerrar</span></footer>
+  </main>
+</body>
+</html>

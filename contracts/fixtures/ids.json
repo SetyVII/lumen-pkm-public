@@ -1,0 +1,10 @@
+{
+  "api": "http://127.0.0.1:8879",
+  "fixture_only": true,
+  "journal": "journal-2026-10-29",
+  "book": "8417a0e2-2624-49cc-a3dc-eb40ca680d99",
+  "person": "f6ad9a6f-6e65-48b2-885d-067fd4fd3e63",
+  "project": "9ee93c9d-0684-42e3-9e74-d3f1b84446d6",
+  "idea": "5dbdfb44-e054-40ce-850e-8cb8f22d152f",
+  "web": "442726ca-9c5d-45f3-bb15-4271d17af443"
+}

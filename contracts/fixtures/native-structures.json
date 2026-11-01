@@ -1,0 +1,100 @@
+{
+  "blocks": [
+    {
+      "id": "shared-table",
+      "type": "table",
+      "text": "",
+      "runs": [],
+      "align": [
+        "left",
+        "center"
+      ],
+      "custom": "preserve-frame",
+      "rows": [
+        [
+          {
+            "runs": [
+              {
+                "text": "Libro",
+                "bold": true,
+                "href": "lumen://object/shared-book",
+                "object_id": "shared-book"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "text": "Estado"
+              }
+            ]
+          }
+        ],
+        [
+          {
+            "runs": [
+              {
+                "text": "Nota"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "text": "Pendiente"
+              }
+            ]
+          }
+        ]
+      ]
+    },
+    {
+      "id": "shared-columns",
+      "type": "columns",
+      "text": "",
+      "runs": [],
+      "columns": [
+        [
+          {
+            "id": "shared-child",
+            "type": "paragraph",
+            "text": "Dentro de columna",
+            "runs": [
+              {
+                "text": "Dentro de columna",
+                "italic": true
+              }
+            ]
+          }
+        ],
+        [
+          {
+            "id": "shared-image-block",
+            "type": "paragraph",
+            "text": "￼",
+            "runs": [
+              {
+                "text": "￼",
+                "type": "image",
+                "object_id": "shared-image",
+                "image_name": "lumen://image/shared-image",
+                "width": 400,
+                "height": 100
+              }
+            ]
+          }
+        ]
+      ]
+    },
+    {
+      "id": "shared-neighbor",
+      "type": "paragraph",
+      "text": "Vecino intacto",
+      "runs": [
+        {
+          "text": "Vecino intacto"
+        }
+      ]
+    }
+  ]
+}

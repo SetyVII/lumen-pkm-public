@@ -1,0 +1,35 @@
+name: lumen-pkm
+
+services:
+  lumen:
+    image: lumen-pkm:local
+    platform: linux/amd64
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      LUMEN_ALLOWED_ORIGINS: "${LUMEN_ALLOWED_ORIGINS:-}"
+    secrets:
+      - encryption_key
+      - api_token
+    volumes:
+      - lumen_data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    stop_grace_period: 20s
+
+secrets:
+  encryption_key:
+    file: ./secrets/encryption.key
+  api_token:
+    file: ./secrets/api.token
+
+volumes:
+  lumen_data:

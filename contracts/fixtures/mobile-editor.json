@@ -1,0 +1,70 @@
+{
+  "objects": [
+    {
+      "id": "editor-fixture-task",
+      "type_id": "task",
+      "title": "Revisar el capítulo",
+      "properties": {
+        "status": "todo"
+      }
+    },
+    {
+      "id": "editor-fixture-note",
+      "type_id": "note",
+      "title": "Editor móvil",
+      "content": "Antes\nRevisar el capítulo\n---\nDespués",
+      "links": [
+        "editor-fixture-task"
+      ],
+      "properties": {
+        "rich_text": null,
+        "blocks": [
+          {
+            "id": "editor-before",
+            "type": "paragraph",
+            "text": "Antes",
+            "runs": [
+              {
+                "text": "Antes"
+              }
+            ]
+          },
+          {
+            "id": "editor-reference",
+            "type": "paragraph",
+            "text": "Revisar el capítulo",
+            "runs": [
+              {
+                "text": "Revisar el capítulo",
+                "href": "lumen://object/editor-fixture-task",
+                "object_id": "editor-fixture-task",
+                "type_id": "task"
+              }
+            ]
+          },
+          {
+            "id": "editor-divider",
+            "type": "divider",
+            "text": "￼",
+            "runs": [
+              {
+                "text": "￼",
+                "type": "divider"
+              }
+            ]
+          },
+          {
+            "id": "editor-after",
+            "type": "paragraph",
+            "text": "Después",
+            "runs": [
+              {
+                "text": "Después"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

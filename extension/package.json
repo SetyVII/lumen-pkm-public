@@ -1,0 +1,6 @@
+{
+  "name": "lumen-browser-capture",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {"build": "node package.mjs", "test": "node --test tests/*.test.cjs", "test:server": "node tests/server-integration.cjs", "preview": "node tests/serve-preview.cjs"}
+}
