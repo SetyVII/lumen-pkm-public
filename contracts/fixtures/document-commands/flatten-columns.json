@@ -1,0 +1,82 @@
+{
+  "input": {
+    "schema_version": 2,
+    "blocks": [
+      {
+        "id": "columns",
+        "type": "columns",
+        "children": [
+          {
+            "id": "column-a",
+            "type": "column",
+            "attrs": {
+              "width": 1
+            },
+            "children": [
+              {
+                "id": "left",
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Izquierda"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "column-b",
+            "type": "column",
+            "attrs": {
+              "width": 2
+            },
+            "children": [
+              {
+                "id": "right",
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Derecha"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "commands": [
+    {
+      "type": "flatten_columns",
+      "node_id": "columns"
+    }
+  ],
+  "expected": {
+    "schema_version": 2,
+    "blocks": [
+      {
+        "id": "left",
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "Izquierda"
+          }
+        ]
+      },
+      {
+        "id": "right",
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "Derecha"
+          }
+        ]
+      }
+    ]
+  }
+}

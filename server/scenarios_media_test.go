@@ -7,6 +7,7 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"lumen/server/internal/document"
 	"strings"
 	"testing"
 )
@@ -23,7 +24,7 @@ func TestScenarioMediaAttachDeleteRestoreExportJourney(t *testing.T) {
 	}
 
 	page := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "note", "title": "Trip plan", "content": "Pack the camera",
+		"type_id": "note", "title": "Trip plan", "document": documentFixture("Pack the camera"),
 	}))
 
 	// Step 1: upload an image on the page. The upload creates the reusable
@@ -52,19 +53,10 @@ func TestScenarioMediaAttachDeleteRestoreExportJourney(t *testing.T) {
 	if !scenarioContainsID(page.Links, media.ID) {
 		t.Fatalf("owner did not link the uploaded image: %v", page.Links)
 	}
-	page = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+page.ID, map[string]any{
-		"properties": map[string]any{
-			"blocks": []any{
-				map[string]any{"id": "trip-intro", "type": "paragraph", "text": "Pack the camera"},
-				map[string]any{
-					"id": "trip-photo", "type": "paragraph", "text": "",
-					"runs": []any{map[string]any{
-						"text": "", "type": "image", "image_name": "lumen://image/" + media.ID,
-					}},
-				},
-			},
-		},
-	}))
+	imageDoc := documentFixture("Pack the camera")
+	imageDoc.Blocks = append(imageDoc.Blocks, document.Node{ID: "trip-photo", Type: "image", Attrs: map[string]any{"asset_id": asset.ID, "object_id": media.ID}})
+	page = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+page.ID, documentPatchPayload(t, app, page.ID, map[string]any{"document": imageDoc})))
+
 	if !scenarioContainsID(page.Links, media.ID) {
 		t.Fatal("editing the page dropped the image link")
 	}

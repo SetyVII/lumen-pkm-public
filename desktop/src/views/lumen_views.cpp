@@ -534,8 +534,6 @@ class ObjectTable final : public QAbstractTableModel {
     }
     QVariant data(const QModelIndex &index, int role = {}) const override {
         if (!index.isValid()) return {};
-        // Calculation footer: value only (Capacities' column footer), muted
-        // through the disabled-item paint and bold so it reads as a summary.
         if (index.row() >= objects.size()) {
             const int footer = index.row() - objects.size();
             const QString text = footerRows.value(footer).value(index.column());
@@ -913,10 +911,6 @@ void LumenViews::rebuild() {
     }
     d->sortMenu->addSeparator();auto *groupMenu=d->sortMenu->addMenu("Agrupar por");
     for(int i=0;i<d->group->count();++i){const QString field=d->group->itemData(i).toString();auto *action=groupMenu->addAction(d->group->itemText(i));action->setCheckable(true);action->setChecked(field==d->spec.value("group_by").toString());connect(action,&QAction::triggered,this,[this,field]{d->spec["group_by"]=field;QTimer::singleShot(0,this,[this]{rebuild();});});}
-    // D7 (view calculations): groups and calculations share this customize
-    // menu, mirroring Capacities' Customize view -> Calculations flow
-    // (docs.capacities.io/reference/views#calculations). Existing
-    // calculations are listed; picking one reopens it for edit or remove.
     const auto calculations=d->spec.value("calculations").toArray();
     d->sortMenu->addSeparator();
     auto *calculationMenu=d->sortMenu->addMenu("Calculations");
@@ -1122,8 +1116,6 @@ void LumenViews::rebuild() {
             auto *col=new QVBoxLayout(column);col->setContentsMargins(10,12,10,12);col->setSpacing(10);
             QString title=key.isEmpty()?"Sin valor":key;if(groupField=="type_id"&&!key.isEmpty())title=s(typeOf(d->types,key),"name");
             auto *heading=new QLabel(title+QString("  %1").arg(groups[key].size()));heading->setTextFormat(Qt::PlainText);heading->setStyleSheet("font-weight:600;padding:2px 3px 8px;");col->addWidget(heading);
-            // D7: a grouped view shows each group's own result (Capacities);
-            // in kanban the line sits under the column heading.
             if(!calculations.isEmpty()){
                 const QString text=LumenCalculations::strip(calculations,groups[key],d->objects,d->types);
                 if(!text.isEmpty()){auto *line=new QLabel(text);line->setObjectName("groupCalculations");line->setTextFormat(Qt::PlainText);line->setWordWrap(true);col->addWidget(line);}
@@ -1136,10 +1128,6 @@ void LumenViews::rebuild() {
         // rebuilding can oscillate forever between two and four columns.
         const int availableWidth=qMax(1,width()-style()->pixelMetric(QStyle::PM_ScrollBarExtent)-4);
         const int columns=mode=="list"||mode=="embed"?1:qMax(1,(availableWidth+14)/244);
-        // D7: an ungrouped view summarizes at the top (Capacities shows the
-        // result at the top of list/gallery/wall/embed); a grouped view puts
-        // each group's own result under that group's header instead, so the
-        // strip never duplicates the per-group lines.
         if(groupField.isEmpty()&&!calculations.isEmpty()){
             const QString text=LumenCalculations::strip(calculations,d->result,d->objects,d->types);
             if(!text.isEmpty()){auto *strip=new QLabel(text);strip->setObjectName("viewCalculations");strip->setTextFormat(Qt::PlainText);strip->setWordWrap(true);outer->addWidget(strip);}
@@ -1240,11 +1228,6 @@ void LumenViews::editProperties(){
     QJsonArray visible;d->columnOrder.clear();for(int i=0;i<list->count();++i){auto *item=list->item(i);if(item->checkState()==Qt::Checked||item->data(Qt::UserRole).toString()=="title"){visible.append(item->data(Qt::UserRole).toString());d->columnOrder<<item->data(Qt::UserRole).toString();}}
     d->spec["visible_properties"]=visible;rebuild();
 }
-// D7 (view calculations): the Customize menu's "Calculations" flow. Capacities
-// picks the property first and then the calculation; one small modal (the
-// alias-editor precedent for form-style dialogs) carries both combos — the op
-// list only offers what fits the property's type — plus Remove when an
-// existing calculation is reopened.
 void LumenViews::editCalculation(int index){
     QJsonArray calculations=d->spec.value("calculations").toArray();
     const bool editing=index>=0&&index<calculations.size();

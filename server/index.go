@@ -33,9 +33,9 @@ func metaFromObject(o Object) ObjectMeta {
 		Revision: o.Revision, Incarnation: o.Incarnation,
 	}
 	if o.Links != nil {
-		meta.Links = append([]string{}, o.Links...)
+		meta.Links = append(append([]string{}, o.Links...), o.DocumentLinks...)
 	} else {
-		meta.Links = []string{}
+		meta.Links = append([]string{}, o.DocumentLinks...)
 	}
 	if len(o.PropertyLinks) > 0 {
 		meta.PropertyLinks = append([]string{}, o.PropertyLinks...)
@@ -80,16 +80,23 @@ func newMemIndex() *memIndex {
 }
 
 func (m *memIndex) rebuild(objects []Object, types []ObjectType) {
+	metas := make([]ObjectMeta, 0, len(objects))
+	for _, o := range objects {
+		metas = append(metas, metaFromObject(o))
+	}
+	m.rebuildMetadata(metas, types)
+}
+
+func (m *memIndex) rebuildMetadata(metas []ObjectMeta, types []ObjectType) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.objects = make(map[string]ObjectMeta, len(objects))
+	m.objects = make(map[string]ObjectMeta, len(metas))
 	m.byType = map[string][]string{}
 	m.backlinkSets = map[string]map[string]struct{}{}
 	m.types = make(map[string]ObjectType, len(types))
 	m.titles = map[string]string{}
-	m.ordered = make([]string, 0, len(objects))
-	for _, o := range objects {
-		meta := metaFromObject(o)
+	m.ordered = make([]string, 0, len(metas))
+	for _, meta := range metas {
 		m.objects[meta.ID] = meta
 		m.ordered = append(m.ordered, meta.ID)
 		m.addRelationsLocked(meta)
@@ -311,6 +318,8 @@ func objectLess(a, b Object) bool {
 
 func cloneObject(o Object) Object {
 	out := o
+	out.Document = cloneDocument(o.Document)
+	out.DocumentLinks = append([]string(nil), o.DocumentLinks...)
 	out.Properties = cloneStringMap(o.Properties)
 	if o.Links != nil {
 		out.Links = append([]string{}, o.Links...)

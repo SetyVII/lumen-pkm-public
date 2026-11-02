@@ -111,11 +111,11 @@ func TestListFiltersContentEmpty(t *testing.T) {
 	whitespace := createObject(t, app, map[string]any{"type_id": "note", "title": "Whitespace content", "content": " \n\t "})
 	richEmpty := createObject(t, app, map[string]any{
 		"type_id": "note", "title": "Empty rich text",
-		"properties": map[string]any{"rich_text": "<p>&nbsp;</p>"},
+		"document": documentFixture(" "),
 	})
 	richText := createObject(t, app, map[string]any{
 		"type_id": "note", "title": "Rich text",
-		"properties": map[string]any{"rich_text": "<p>Hello</p>"},
+		"document": documentFixture("Hello"),
 	})
 	blocksEmpty := createObject(t, app, map[string]any{
 		"type_id": "note", "title": "Empty blocks",

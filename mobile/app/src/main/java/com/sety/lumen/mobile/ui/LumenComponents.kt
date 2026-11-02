@@ -451,6 +451,13 @@ fun LumenEditorField(
     onBlocksChange: ((org.json.JSONArray) -> Unit)? = null,
     blockTextStyle: androidx.compose.ui.text.TextStyle? = null,
 ) {
+    if (renderNative && source != null && onBlocksChange != null) {
+        androidx.compose.runtime.key(source.id) {
+            CanonicalDocumentEditor(source.document, objects, assetFor, onOpenObject,
+                onChange = { onBlocksChange(it.blocks()) }, modifier = modifier, objectId = source.id)
+        }
+        return
+    }
     val blocks = source?.properties?.optJSONArray("blocks")
     if (renderNative && source != null && blocks != null && blocks.length() > 0 &&
         com.sety.lumen.mobile.data.nativeDocumentText(blocks) == value.text) {

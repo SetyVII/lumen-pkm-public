@@ -6,6 +6,7 @@ package main
 // default templates and the lazy journal.
 
 import (
+	"lumen/server/internal/document"
 	"strings"
 	"testing"
 )
@@ -22,16 +23,15 @@ func TestScenarioTemplateAndJournalJourney(t *testing.T) {
 
 	// Step 1: save a template with a date variable, properties and blocks.
 	template := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": meetingType.ID, "title": "Weekly sync {date:long}", "content": "Template body",
+		"type_id": meetingType.ID, "title": "Weekly sync {date:long}", "document": document.Document{SchemaVersion: 2, Blocks: []document.Node{
+			{ID: "template-heading", Type: "heading", Attrs: map[string]any{"level": 2}, Content: []document.Inline{{Type: "text", Text: "Agenda"}}},
+			{ID: "template-body", Type: "paragraph", Content: []document.Inline{{Type: "text", Text: "Template body"}}},
+		}},
 		"properties": map[string]any{
 			"is_template": true,
 			"when":        "{date}",
 			"agenda":      "Standup",
 			"tags":        []string{tag.ID},
-			"blocks": []any{
-				map[string]any{"id": "template-heading", "type": "heading", "level": 2, "text": "Agenda"},
-				map[string]any{"id": "template-body", "type": "paragraph", "text": "Template body"},
-			},
 		},
 	}))
 	if !isTemplateObject(template) {
@@ -72,16 +72,16 @@ func TestScenarioTemplateAndJournalJourney(t *testing.T) {
 	if tags, ok := created.Properties["tags"].([]any); !ok || len(tags) != 1 || tags[0] != tag.ID {
 		t.Fatalf("tag relation was not copied: %#v", created.Properties["tags"])
 	}
-	blocks := scenarioObjectBlocks(t, created)
+	blocks := created.Document.Blocks
 	if len(blocks) != 2 || blocks[0].ID == "template-heading" || blocks[1].ID == "template-body" {
 		t.Fatalf("blocks were not deep-copied with fresh ids: %+v", blocks)
 	}
-	if blocks[0].Text != "Agenda" || blocks[1].Text != "Template body" {
+	if blocks[0].Content[0].Text != "Agenda" || blocks[1].Content[0].Text != "Template body" {
 		t.Fatalf("block payload changed during copy: %+v", blocks)
 	}
 	// The template itself is untouched.
 	original := scenarioGet(t, app, template.ID)
-	originalBlocks := scenarioObjectBlocks(t, original)
+	originalBlocks := original.Document.Blocks
 	if originalBlocks[0].ID != "template-heading" {
 		t.Fatal("applying the template mutated it")
 	}
@@ -107,13 +107,10 @@ func TestScenarioTemplateAndJournalJourney(t *testing.T) {
 
 	// Step 5: a daily-note template applied to a brand-new date.
 	journalTemplate := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "journal", "title": "Daily {date:long}", "content": "Daily body",
+		"type_id": "journal", "title": "Daily {date:long}", "document": documentFixture("Daily body"),
 		"properties": map[string]any{
 			"is_template": true,
 			"date":        "{date}",
-			"blocks": []any{
-				map[string]any{"id": "daily-template-block", "type": "paragraph", "text": "Daily body"},
-			},
 		},
 	}))
 	scenarioStatus(t, api(t, app, "PATCH", "/v1/types/journal", map[string]any{
@@ -129,8 +126,8 @@ func TestScenarioTemplateAndJournalJourney(t *testing.T) {
 	if _, exists := journal.Properties["is_template"]; exists {
 		t.Fatal("journal inherited is_template")
 	}
-	journalBlocks := scenarioObjectBlocks(t, journal)
-	if len(journalBlocks) != 1 || journalBlocks[0].ID == "daily-template-block" || journalBlocks[0].Text != "Daily body" {
+	journalBlocks := journal.Document.Blocks
+	if len(journalBlocks) != 1 || journalBlocks[0].ID == journalTemplate.Document.Blocks[0].ID || journalBlocks[0].Content[0].Text != "Daily body" {
 		t.Fatalf("journal blocks were not copied with fresh ids: %+v", journalBlocks)
 	}
 	again := objectFrom(t, api(t, app, "GET", "/v1/journal/2026-11-01?apply_default_template=true", nil))

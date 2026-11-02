@@ -4,15 +4,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"lumen/server/internal/document"
 	"strconv"
 	"strings"
 )
 
-// maxObjectVersions bounds the history kept per object. Capacities exposes a
-// per-object version history; Lumen keeps the 20 most recent previous states so
-// an autosaving client cannot grow the encrypted store without bound. The cap
-// is enforced transactionally on every snapshot write, so a reader never sees
-// an object with more than maxObjectVersions snapshots.
 const maxObjectVersions = 20
 
 // versionRecordKind marks an in-memory record as a snapshot. PutBatch
@@ -23,15 +19,17 @@ const versionRecordKind = "version"
 // revision bump. It lives in the object_versions side table, encrypted with
 // AES-256-GCM and associated with its object_id/revision pair.
 type ObjectVersion struct {
-	ObjectID   string         `json:"object_id"`
-	Revision   uint64         `json:"revision"`
-	TypeID     string         `json:"type_id"`
-	Title      string         `json:"title"`
-	Content    string         `json:"content"`
-	Properties map[string]any `json:"properties"`
-	Links      []string       `json:"links"`
-	UpdatedAt  string         `json:"updated_at"`
-	CapturedAt string         `json:"captured_at"`
+	Document      *document.Document `json:"document,omitempty"`
+	DocumentLinks []string           `json:"document_links,omitempty"`
+	ObjectID      string             `json:"object_id"`
+	Revision      uint64             `json:"revision"`
+	TypeID        string             `json:"type_id"`
+	Title         string             `json:"title"`
+	Content       string             `json:"content"`
+	Properties    map[string]any     `json:"properties"`
+	Links         []string           `json:"links"`
+	UpdatedAt     string             `json:"updated_at"`
+	CapturedAt    string             `json:"captured_at"`
 }
 
 // VersionRecord is how prepareSave hands a snapshot to the store. PutBatch
@@ -53,15 +51,17 @@ func snapshotFromObject(o Object) ObjectVersion {
 		properties = map[string]any{}
 	}
 	return ObjectVersion{
-		ObjectID:   o.ID,
-		Revision:   o.Revision,
-		TypeID:     o.TypeID,
-		Title:      o.Title,
-		Content:    o.Content,
-		Properties: properties,
-		Links:      append([]string{}, o.Links...),
-		UpdatedAt:  o.UpdatedAt,
-		CapturedAt: now(),
+		ObjectID:      o.ID,
+		Document:      cloneDocument(o.Document),
+		DocumentLinks: append([]string(nil), o.DocumentLinks...),
+		Revision:      o.Revision,
+		TypeID:        o.TypeID,
+		Title:         o.Title,
+		Content:       o.Content,
+		Properties:    properties,
+		Links:         append([]string{}, o.Links...),
+		UpdatedAt:     o.UpdatedAt,
+		CapturedAt:    now(),
 	}
 }
 

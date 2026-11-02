@@ -1,5 +1,7 @@
 package main
 
+import "lumen/server/internal/document"
+
 // purgeObjectData builds the permanent deletion transaction for a trashed
 // object. The tombstone stays as the anti-resurrection marker; the trash
 // payload and the live row disappear, inbound references are cleaned through
@@ -16,7 +18,7 @@ func (a *App) purgeObjectData(t trashedObject) ([]Record, [][2]string, error) {
 			ID: id, Revision: t.Object.Revision + 1, DeletedAt: t.DeletedAt,
 		}})
 	}
-	deletes := [][2]string{{"trash", id}, {"versions", id}}
+	deletes := [][2]string{{"trash", id}, {"versions", id}, {"receipts", id}}
 	// Purging a template must also clear every default_template_id that points
 	// at it, or the dangling reference would outlive the type registry check.
 	if isTemplateObject(t.Object) {
@@ -65,7 +67,8 @@ func (a *App) purgeObjectData(t trashedObject) ([]Record, [][2]string, error) {
 		linksChanged := len(clean) != len(other.Links)
 		other.Links = clean
 		propertiesChanged := a.removePropertyReference(&other, id)
-		if linksChanged || propertiesChanged {
+		documentChanged := removeCanonicalReferences(&other, map[string]string{id: t.Object.Title}, nil)
+		if linksChanged || propertiesChanged || documentChanged {
 			other.UpdatedAt = now()
 			changed[other.ID] = other
 		}
@@ -97,10 +100,10 @@ func (a *App) purgeObjectData(t trashedObject) ([]Record, [][2]string, error) {
 }
 
 func removeAssetReferences(o *Object, assetIDs map[string]bool) bool {
-	if len(assetIDs) == 0 || o.Properties == nil {
+	if len(assetIDs) == 0 {
 		return false
 	}
-	changed := false
+	changed := removeCanonicalReferences(o, nil, assetIDs)
 	for _, key := range []string{"image_asset_id", "asset_id"} {
 		if id, ok := o.Properties[key].(string); ok && assetIDs[id] {
 			delete(o.Properties, key)
@@ -119,6 +122,63 @@ func removeAssetReferences(o *Object, assetIDs map[string]bool) bool {
 			clean = append(clean, item)
 		}
 		o.Properties["assets"] = clean
+	}
+	return changed
+}
+
+// removeCanonicalReferences preserves readable labels and node identities while
+// removing references to permanently deleted objects or media. Version snapshots
+// remain immutable; callers sanitize a snapshot again when explicitly restoring.
+func removeCanonicalReferences(o *Object, objectIDs map[string]string, assetIDs map[string]bool) bool {
+	if o.Document == nil {
+		return false
+	}
+	d := cloneDocument(o.Document)
+	changed := false
+	labelFor := func(id, label string) string {
+		if label != "" {
+			return label
+		}
+		if objectIDs[id] != "" {
+			return objectIDs[id]
+		}
+		return "Objeto eliminado"
+	}
+	var visit func([]document.Node)
+	visit = func(nodes []document.Node) {
+		for i := range nodes {
+			n := &nodes[i]
+			for j, in := range n.Content {
+				if _, ok := objectIDs[in.ObjectID]; in.ObjectID != "" && ok {
+					n.Content[j] = document.Inline{Type: "text", Text: labelFor(in.ObjectID, in.Label), Marks: in.Marks}
+					changed = true
+				}
+			}
+			objectID, _ := n.Attrs["object_id"].(string)
+			assetID, _ := n.Attrs["asset_id"].(string)
+			if _, ok := objectIDs[objectID]; objectID != "" && ok {
+				if n.Type == "object_embed" {
+					*n = document.Node{ID: n.ID, Type: "paragraph", Content: []document.Inline{{Type: "text", Text: labelFor(objectID, "")}}, Children: n.Children}
+				} else {
+					delete(n.Attrs, "object_id")
+				}
+				changed = true
+			}
+			if assetIDs[assetID] && n.Type == "image" {
+				caption, _ := n.Attrs["caption"].(string)
+				*n = document.Node{ID: n.ID, Type: "paragraph", Children: n.Children}
+				if caption != "" {
+					n.Content = []document.Inline{{Type: "text", Text: caption}}
+				}
+				changed = true
+			}
+			visit(n.Children)
+		}
+	}
+	visit(d.Blocks)
+	if changed {
+		o.Document = d
+		o.Content = document.PlainText(*d)
 	}
 	return changed
 }

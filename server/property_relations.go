@@ -39,6 +39,10 @@ func (a *App) validateTypeReferences(typ ObjectType) error {
 }
 
 func (a *App) validatePropertyValues(o *Object, typ ObjectType) error {
+	return a.validatePropertyValuesReferences(o, typ, false)
+}
+
+func (a *App) validatePropertyValuesReferences(o *Object, typ ObjectType, allowPending bool) error {
 	// is_template is reserved on every type, including legacy schemas that have
 	// not been normalized yet. Reject non-booleans even when the schema lacks
 	// the definition, so the flag cannot silently become a truthy string.
@@ -134,24 +138,22 @@ func (a *App) validatePropertyValues(o *Object, typ ObjectType) error {
 				return invalid()
 			}
 			for _, id := range ids {
-				if id == "" || strings.TrimSpace(id) != id {
+				if !validObjectReferenceID(id) {
 					return invalid()
 				}
 				target := *o
+				targetExists := true
 				if id != o.ID {
 					var err error
-					target, err = a.store.Object(id)
+					target, targetExists, err = a.referenceTarget(id)
 					if err != nil {
-						// A trashed target is restorable, so the reference is
-						// kept and its type is read from the trash payload.
-						trashed, trashErr := a.store.TrashedObject(id)
-						if trashErr != nil {
-							return fmt.Errorf("Property %s references an object that does not exist", key)
-						}
-						target = trashed.Object
+						return fmt.Errorf("Could not read property %s reference: %w", key, err)
+					}
+					if !targetExists && !allowPending {
+						return fmt.Errorf("Property %s references an object that does not exist", key)
 					}
 				}
-				if targetType, _ := schema["target_type"].(string); targetType != "" && target.TypeID != targetType {
+				if targetType, _ := schema["target_type"].(string); targetExists && targetType != "" && target.TypeID != targetType {
 					return fmt.Errorf("Property %s requires objects of type %s", key, targetType)
 				}
 				if !seen[id] && id != o.ID {
@@ -222,7 +224,7 @@ func (a *App) recomputePropertyLinks(o *Object, typ ObjectType) {
 func allObjectLinks(o Object) []string {
 	out := make([]string, 0, len(o.Links)+len(o.PropertyLinks))
 	seen := map[string]bool{}
-	for _, group := range [][]string{o.Links, o.PropertyLinks} {
+	for _, group := range [][]string{o.Links, o.PropertyLinks, o.DocumentLinks} {
 		for _, id := range group {
 			if id != "" && id != o.ID && !seen[id] {
 				out = append(out, id)

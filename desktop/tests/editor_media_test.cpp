@@ -284,16 +284,15 @@ int main(int argc, char **argv) {
         QTest::keyClick(&editor, Qt::Key_Escape);
         process();
 
-        // --- Capacities Slash Menu test ---
         editor.clear();
         editor.showBlockMenu();
         process();
-        auto *capacitiesMenu = editor.findChild<QListWidget *>("blockResults");
-        require(capacitiesMenu && capacitiesMenu->isVisible(), "slash menu must open");
+        auto *blockMenu = editor.findChild<QListWidget *>("blockResults");
+        require(blockMenu && blockMenu->isVisible(), "slash menu must open");
         bool hasDivider = false, hasColumns = false, hasTable = false, hasGroup = false, hasIcon = false, hasCode = false;
         bool hasObjectSection = false, hasNewTask = false;
-        for (int i = 0; i < capacitiesMenu->count(); ++i) {
-            auto *it = capacitiesMenu->item(i);
+        for (int i = 0; i < blockMenu->count(); ++i) {
+            auto *it = blockMenu->item(i);
             const QString style = it->data(Qt::UserRole).toString();
             const QString title = it->text();
             if (style == "divider") hasDivider = true;
@@ -306,7 +305,7 @@ int main(int argc, char **argv) {
             if (it->data(Qt::UserRole + 1).toString() == "task") hasNewTask = true;
         }
         require(hasDivider && hasColumns && hasTable && hasGroup && hasIcon && hasCode,
-            "slash menu must include all Capacities structural blocks: divider, columns, table, group, icon, code");
+            "slash menu must include all editor structural blocks: divider, columns, table, group, icon, code");
         require(hasObjectSection && hasNewTask, "slash menu must include 'Crear un objeto' section with object types like Task");
         QTest::keyClick(&editor, Qt::Key_Escape);
         process();

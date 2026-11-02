@@ -6,18 +6,6 @@
 #include <QPair>
 #include <QString>
 
-// Capacities-style view calculations
-// (https://docs.capacities.io/reference/views#calculations): one calculation
-// summarizes one property across the objects shown by a view. Pure
-// client-side evaluation over the view's own object set — the data is already
-// in RAM, so no server or contract changes are involved. LumenViews renders
-// the results: a footer row per calculation under the property's column in
-// table view, a summary strip at the top of the other presentations, and a
-// per-group line when the view is grouped.
-//
-// Spec shape (rides the existing saved-query view config / collectionSpecs
-// persistence; key names documented for later contract adoption):
-//   "calculations": [ {"property": "properties.pages", "op": "sum"}, ... ]
 namespace LumenCalculations {
 
 // Kind of a field for calculation purposes: "number", "date", "boolean" or
@@ -26,9 +14,6 @@ namespace LumenCalculations {
 // infer the kind when no type defines the property.
 QString kindOf(const QJsonArray &types, const QJsonArray &objects, const QString &field);
 
-// (op id, English menu label) pairs valid for a kind — the picker only ever
-// offers these, mirroring Capacities' "the menu only lists calculations that
-// fit the property".
 QList<QPair<QString, QString>> opsForKind(const QString &kind);
 
 // Verbose menu label of an op for a kind ("Range (days)" for dates); falls

@@ -1,0 +1,43 @@
+{
+  "pending_source": {
+    "id": "pending-typed-origin",
+    "type_id": "note",
+    "properties": {
+      "related": "arriving-wrong-type"
+    }
+  },
+  "arriving_target": {
+    "id": "arriving-wrong-type",
+    "type_id": "book"
+  },
+  "expected_receipt_warning": {
+    "reference_issues": [
+      {
+        "source_object_id": "pending-typed-origin",
+        "property_key": "related",
+        "target_object_id": "arriving-wrong-type",
+        "expected_type": "note",
+        "actual_type": "book"
+      }
+    ]
+  },
+  "expected_report": {
+    "object_id": "arriving-wrong-type",
+    "issues": [
+      {
+        "source_object_id": "pending-typed-origin",
+        "property_key": "related",
+        "target_object_id": "arriving-wrong-type",
+        "expected_type": "note",
+        "actual_type": "book"
+      }
+    ],
+    "next_cursor": ""
+  },
+  "corrected_target_type": "note",
+  "expected_corrected_report": {
+    "object_id": "arriving-wrong-type",
+    "issues": [],
+    "next_cursor": ""
+  }
+}

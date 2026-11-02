@@ -7,8 +7,8 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import org.json.JSONObject
 
-class LumenDatabase(context: Context, private val vault: KeyVault) :
-    SQLiteOpenHelper(context.applicationContext, "lumen.db", null, 1) {
+class LumenDatabase(context: Context, private val vault: KeyVault, databaseName: String = "lumen-document-v2.db") :
+    SQLiteOpenHelper(context.applicationContext, databaseName, null, 3) {
 
     private var ftsAvailable = true
     private val reads = MemoryReadCache()
@@ -63,7 +63,8 @@ class LumenDatabase(context: Context, private val vault: KeyVault) :
                 object_id TEXT,
                 payload BLOB NOT NULL,
                 created_at TEXT NOT NULL,
-                attempts INTEGER NOT NULL DEFAULT 0
+                attempts INTEGER NOT NULL DEFAULT 0,
+                asset_id TEXT NOT NULL DEFAULT ''
             )""".trimIndent()
         )
         db.execSQL("CREATE TABLE sync_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
@@ -83,11 +84,20 @@ class LumenDatabase(context: Context, private val vault: KeyVault) :
                 has_content INTEGER NOT NULL DEFAULT 0
             )""".trimIndent()
         )
+        db.execSQL("CREATE INDEX outbox_asset ON outbox(asset_id, action)")
+        db.execSQL("CREATE INDEX outbox_object ON outbox(object_id, action, created_at)")
+        db.execSQL("CREATE TABLE blocked_outbox(object_id TEXT PRIMARY KEY, reason TEXT NOT NULL, remote_revision INTEGER NOT NULL, recovery_copy_id TEXT)")
         ensureFts(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // Version 1 is the first mobile schema. Future migrations belong here.
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE outbox ADD COLUMN asset_id TEXT NOT NULL DEFAULT ''")
+            db.execSQL("CREATE INDEX outbox_asset ON outbox(asset_id, action)")
+            db.execSQL("CREATE INDEX outbox_object ON outbox(object_id, action, created_at)")
+        }
+        if (oldVersion < 3) db.execSQL("CREATE TABLE blocked_outbox(object_id TEXT PRIMARY KEY, reason TEXT NOT NULL, remote_revision INTEGER NOT NULL, recovery_copy_id TEXT)")
+
     }
 
     override fun onOpen(db: SQLiteDatabase) {
@@ -111,10 +121,13 @@ class LumenDatabase(context: Context, private val vault: KeyVault) :
     private fun open(payload: ByteArray, aad: String): String =
         String(CryptoBox.decrypt(key(), payload, aad), Charsets.UTF_8)
 
-    fun saveObject(obj: LumenObject, seq: Long = 0, enqueue: OutboxOp? = null) {
+    fun saveObject(value: LumenObject, seq: Long = 0, enqueue: OutboxOp? = null) {
         val db = writableDatabase
         db.beginTransaction()
         try {
+            val blocked=isRemoteDeletionBlocked(value.id)
+            val obj=if(blocked)value.copy(syncStatus="error",syncError="remote_deleted: Borrado remoto; borrador local conservado y bloqueado")else value
+            if(blocked&&enqueue!=null)db.update("blocked_outbox",ContentValues().apply{putNull("recovery_copy_id")},"object_id=?",arrayOf(obj.id))
             val values = ContentValues().apply {
                 put("id", obj.id)
                 put("type_id", obj.typeId)
@@ -126,7 +139,12 @@ class LumenDatabase(context: Context, private val vault: KeyVault) :
             updateFts(db, obj)
             updateWidgetProjection(db, obj)
             updateJournalDay(db, obj)
-            if (enqueue != null) insertOutbox(db, enqueue)
+            if (enqueue != null) {
+                // Replace unsent snapshots in the same transaction as the local edit.
+                if (enqueue.action == "put" && !enqueue.payload.optBoolean("append"))
+                    db.delete("outbox", "object_id=? AND action=? AND attempts=0", arrayOf(obj.id, "put"))
+                insertOutbox(db, enqueue)
+            }
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
@@ -324,6 +342,31 @@ class LumenDatabase(context: Context, private val vault: KeyVault) :
         saveAsset(asset.copy(pinned = pinned))
     }
 
+    fun isRemoteDeletionBlocked(id:String):Boolean = readableDatabase.query("blocked_outbox",arrayOf("object_id"),"object_id=?",arrayOf(id),null,null,null,"1").use{it.moveToFirst()}
+
+    fun blockedConflictCount():Int = readableDatabase.rawQuery("SELECT count(*) FROM blocked_outbox WHERE recovery_copy_id IS NULL",null).use{it.moveToFirst();it.getInt(0)}
+
+    fun recoveryCopyId(id:String):String? = readableDatabase.query("blocked_outbox",arrayOf("recovery_copy_id"),"object_id=?",arrayOf(id),null,null,null,"1").use{if(it.moveToFirst()&&!it.isNull(0))it.getString(0)else null}
+
+    private fun blockRemoteDeletion(db:SQLiteDatabase,id:String,revision:Long) {
+        db.insertWithOnConflict("blocked_outbox",null,ContentValues().apply{put("object_id",id);put("reason","remote_deleted");put("remote_revision",revision)},SQLiteDatabase.CONFLICT_IGNORE)
+        db.execSQL("UPDATE blocked_outbox SET remote_revision=MAX(remote_revision,?) WHERE object_id=?",arrayOf<Any>(revision,id))
+        db.query("objects",arrayOf("payload"),"id=?",arrayOf(id),null,null,null,"1").use{cursor->if(cursor.moveToFirst()) {
+            val obj=LumenObject.fromJson(open(cursor.getBlob(0),"object/$id")).copy(syncStatus="error",syncError="remote_deleted: Borrado remoto; borrador local conservado y bloqueado")
+            db.update("objects",ContentValues().apply{put("payload",seal(obj.toJson().toString(),"object/$id"))},"id=?",arrayOf(id))
+        }}
+    }
+
+    fun saveRecoveryCopy(sourceId:String,copy:LumenObject,operation:OutboxOp) {
+        val db=writableDatabase;db.beginTransaction()
+        try {
+            check(isRemoteDeletionBlocked(sourceId)){"El objeto no tiene borrado remoto pendiente"}
+            saveObject(copy,enqueue=operation)
+            db.update("blocked_outbox",ContentValues().apply{put("recovery_copy_id",copy.id)},"object_id=?",arrayOf(sourceId))
+            db.setTransactionSuccessful()
+        } finally {db.endTransaction();reads.clear()}
+    }
+
     fun deleteOutboxForObject(objectId: String, action: String = "put") {
         writableDatabase.delete("outbox", "object_id=? AND action=?", arrayOf(objectId, action))
     }
@@ -348,18 +391,38 @@ class LumenDatabase(context: Context, private val vault: KeyVault) :
             put("payload", seal(op.payload.toString(), "outbox/${op.opId}"))
             put("created_at", op.createdAt)
             put("attempts", op.attempts)
+            put("asset_id", op.payload.optJSONObject("asset")?.optString("id").orEmpty())
         }
         db.insertWithOnConflict("outbox", null, values, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
-    fun outbox(limit: Int = 100): List<OutboxOp> {
+    fun outbox(limit: Int = 100): List<OutboxOp> = readOutbox(limit = limit)
+
+    fun pendingAssetOperation(id: String): OutboxOp? {
+        // Upgrade can happen while the vault is locked. Backfill small asset
+        // operations lazily after unlock, one encrypted payload at a time.
+        writableDatabase.query("outbox", arrayOf("op_id", "payload"), "asset_id='' AND action=?", arrayOf("asset"), null, null, null).use { cursor ->
+            while(cursor.moveToNext()) {
+                val opId=cursor.getString(0)
+                val assetId=JSONObject(open(cursor.getBlob(1),"outbox/$opId")).getJSONObject("asset").getString("id")
+                writableDatabase.update("outbox",ContentValues().apply{put("asset_id",assetId)},"op_id=?",arrayOf(opId))
+            }
+        }
+        return readOutbox("asset_id=? AND action=?", arrayOf(id,"asset"), 1).firstOrNull()
+    }
+    fun firstPendingPut(id: String): OutboxOp? = readOutbox("object_id=? AND action=?", arrayOf(id,"put"), 1).firstOrNull()
+
+    private fun readOutbox(selection: String? = null, args: Array<String>? = null, limit: Int = 100): List<OutboxOp> {
         val out = mutableListOf<OutboxOp>()
-        readableDatabase.query("outbox", null, null, null, null, null, "created_at", limit.toString()).use { cursor ->
+        var bytes = 0L
+        readableDatabase.query("outbox", null, "NOT EXISTS (SELECT 1 FROM blocked_outbox b WHERE b.object_id=outbox.object_id)" + (selection?.let { " AND ($it)" } ?: ""), args, null, null, "created_at,rowid", limit.toString()).use { cursor ->
             while (cursor.moveToNext()) {
                 val opId = cursor.getString(cursor.getColumnIndexOrThrow("op_id"))
-                val payload = runCatching { JSONObject(open(cursor.getBlob(cursor.getColumnIndexOrThrow("payload")), "outbox/$opId")) }
-                    .onFailure { android.util.Log.w("LumenSync", "Operación de outbox ilegible, se omite: $opId", it) }
-                    .getOrNull() ?: continue
+                val sealed = cursor.getBlob(cursor.getColumnIndexOrThrow("payload"))
+                if (out.isNotEmpty() && bytes + sealed.size > 16L * 1024 * 1024) break
+                bytes += sealed.size
+                val payload = try { JSONObject(open(sealed, "outbox/$opId")) }
+                    catch (error: Exception) { throw IllegalStateException("Operación pendiente ilegible; se conserva para recuperar: $opId", error) }
                 out += OutboxOp(
                     opId = opId,
                     action = cursor.getString(cursor.getColumnIndexOrThrow("action")),
@@ -394,9 +457,11 @@ class LumenDatabase(context: Context, private val vault: KeyVault) :
     // A successful push is the mobile-side acknowledgement. Do not wait for a
     // later pull: the server no longer exports to Logseq and does not own this
     // local pending marker.
-    fun confirmPush(applied: Collection<String>, operations: List<JSONObject>) {
+    fun confirmPush(applied: Collection<String>, operations: List<JSONObject>, receipts: List<SyncReceipt> = emptyList(), conflicts: List<SyncConflict> = emptyList()) {
         if (applied.isEmpty()) return
         val appliedSet = applied.toSet()
+        val confirmed = receipts.associateBy { it.opId }
+        val remotelyDeleted = conflicts.filter { it.resolution == "ignored_tombstoned" }.associateBy { it.opId }
         val db = writableDatabase
         db.beginTransaction()
         try {
@@ -404,26 +469,37 @@ class LumenDatabase(context: Context, private val vault: KeyVault) :
                 val opId = op.optString("op_id")
                 if (opId !in appliedSet) return@forEach
                 val objectId = op.optString("object_id")
+                if(remotelyDeleted[opId]?.objectId==objectId && op.optString("action")=="put") {
+                    blockRemoteDeletion(db,objectId,0);return@forEach
+                }
                 db.delete("outbox", "op_id=?", arrayOf(opId))
                 if (objectId.isBlank() || op.optString("action") == "delete") return@forEach
+                val receipt = confirmed[opId]?.takeIf { it.objectId == objectId && it.revision > 0 }
+                // Only our own acknowledged commit may advance the base of a newer local edit.
+                if (receipt != null) {
+                    val pending = mutableListOf<Pair<String, JSONObject>>()
+                    db.query("outbox", arrayOf("op_id", "payload"), "object_id=? AND action=? AND attempts=0", arrayOf(objectId, "put"), null, null, null).use { cursor ->
+                        while (cursor.moveToNext()) {
+                            val id = cursor.getString(0)
+                            val payload = JSONObject(open(cursor.getBlob(1), "outbox/$id"))
+                            advanceUnsentDocumentOperation(payload, 0, receipt)?.let { pending += id to it }
+                        }
+                    }
+                    pending.forEach { (id, payload) -> db.update("outbox", ContentValues().apply {
+                        put("payload", seal(payload.toString(), "outbox/$id"))
+                    }, "op_id=?", arrayOf(id)) }
+                }
                 db.query("objects", arrayOf("payload"), "id=?", arrayOf(objectId), null, null, null, "1").use { cursor ->
                     if (!cursor.moveToFirst()) return@use
-                    val obj = runCatching { LumenObject.fromJson(open(cursor.getBlob(0), "object/$objectId")) }.getOrNull() ?: return@use
-                    val synced = obj.copy(syncStatus = "synced", syncError = "")
-                    db.update(
-                        "objects",
-                        ContentValues().apply { put("payload", seal(synced.toJson().toString(), "object/$objectId")) },
-                        "id=?",
-                        arrayOf(objectId),
-                    )
-                    db.execSQL("UPDATE widget_tasks SET sync_pending=0 WHERE id=?", arrayOf(objectId))
+                    val obj = LumenObject.fromJson(open(cursor.getBlob(0), "object/$objectId"))
+                    val pending = hasPendingOutbox(db, objectId)
+                    val updated = obj.copy(revision = maxOf(obj.revision, receipt?.revision ?: obj.revision), syncStatus = if (pending) "pending" else "synced", syncError = "")
+                    db.update("objects", ContentValues().apply { put("payload", seal(updated.toJson().toString(), "object/$objectId")) }, "id=?", arrayOf(objectId))
+                    if (!pending) db.execSQL("UPDATE widget_tasks SET sync_pending=0 WHERE id=?", arrayOf(objectId))
                 }
             }
             db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
-            reads.clear()
-        }
+        } finally { db.endTransaction(); reads.clear() }
     }
 
     fun markOutboxAttempt(opIds: Collection<String>) {
@@ -437,6 +513,19 @@ class LumenDatabase(context: Context, private val vault: KeyVault) :
             db.endTransaction()
             reads.clear()
         }
+    }
+
+    /** Claim and read atomically, so an autosave cannot coalesce an operation between read and send. */
+    fun claimOutbox(opIds: List<String>): List<OutboxOp> {
+        if (opIds.isEmpty()) return emptyList()
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val claimed = readOutbox("op_id IN (${opIds.joinToString(",") { "?" }})", opIds.toTypedArray(), opIds.size)
+            claimed.forEach { db.execSQL("UPDATE outbox SET attempts=attempts+1 WHERE op_id=?", arrayOf(it.opId)) }
+            db.setTransactionSuccessful()
+            return claimed.map { it.copy(attempts = it.attempts + 1) }
+        } finally { db.endTransaction(); reads.clear() }
     }
 
     fun meta(key: String): String? =
@@ -540,6 +629,8 @@ class LumenDatabase(context: Context, private val vault: KeyVault) :
         val db = writableDatabase
         db.beginTransaction()
         try {
+            val previous=db.query("sync_meta",arrayOf("value"),"key=?",arrayOf("document_v2_pull_seq"),null,null,null).use {if(it.moveToFirst())it.getString(0).toLong()else 0L}
+            appliedPullCursor(previous,result)
             result.objects.forEach { raw ->
                 // Never overwrite a local object that still has an unconfirmed
                 // outbox operation. The next push will reconcile it first.
@@ -551,7 +642,7 @@ class LumenDatabase(context: Context, private val vault: KeyVault) :
                     put("id", obj.id)
                     put("type_id", obj.typeId)
                     put("payload", seal(obj.toJson().toString(), "object/${obj.id}"))
-                    put("seq", result.headSeq)
+                    put("seq", result.nextSeq)
                     put("updated_at", obj.updatedAt.ifBlank { nowIso() })
                 }
                 db.insertWithOnConflict("objects", null, values, SQLiteDatabase.CONFLICT_REPLACE)
@@ -566,7 +657,7 @@ class LumenDatabase(context: Context, private val vault: KeyVault) :
                     ContentValues().apply {
                         put("id", type.id)
                         put("payload", seal(type.toJson().toString(), "type/${type.id}"))
-                        put("seq", result.headSeq)
+                        put("seq", result.nextSeq)
                     },
                     SQLiteDatabase.CONFLICT_REPLACE,
                 )
@@ -583,10 +674,11 @@ class LumenDatabase(context: Context, private val vault: KeyVault) :
                     ContentValues().apply {
                         put("id", tombstone.id)
                         put("payload", seal(json, "tombstone/${tombstone.id}"))
-                        put("seq", result.headSeq)
+                        put("seq", result.nextSeq)
                     },
                     SQLiteDatabase.CONFLICT_REPLACE,
                 )
+                if(hasPendingOutbox(db,tombstone.id)) { blockRemoteDeletion(db,tombstone.id,tombstone.revision);return@forEach }
                 db.delete("objects", "id=?", arrayOf(tombstone.id))
                 if (ftsAvailable) db.delete("objects_fts", "id=?", arrayOf(tombstone.id))
                 db.delete("widget_tasks", "id=?", arrayOf(tombstone.id))
@@ -608,7 +700,7 @@ class LumenDatabase(context: Context, private val vault: KeyVault) :
                         put("mime", merged.mime)
                         put("size", merged.size)
                         put("created_at", merged.createdAt)
-                        put("seq", result.headSeq)
+                        put("seq", result.nextSeq)
                         put("local_path", merged.localPath)
                         put("thumb_path", merged.thumbPath)
                         put("pinned", if (merged.pinned) 1 else 0)
@@ -620,15 +712,19 @@ class LumenDatabase(context: Context, private val vault: KeyVault) :
             result.deleted.forEach { deleted ->
                 when (deleted.kind) {
                     "object" -> {
+                        if(hasPendingOutbox(db,deleted.id)) {blockRemoteDeletion(db,deleted.id,0);return@forEach}
                         db.delete("objects", "id=?", arrayOf(deleted.id))
                         if (ftsAvailable) db.delete("objects_fts", "id=?", arrayOf(deleted.id))
                         db.delete("widget_tasks", "id=?", arrayOf(deleted.id))
                         db.delete("outbox", "object_id=?", arrayOf(deleted.id))
                     }
                     "type" -> db.delete("types", "id=?", arrayOf(deleted.id))
-                    "asset" -> db.delete("assets", "id=?", arrayOf(deleted.id))
+                    "asset" -> if(asset(deleted.id)?.objectId?.let(::isRemoteDeletionBlocked)!=true) db.delete("assets", "id=?", arrayOf(deleted.id))
                 }
             }
+            db.insertWithOnConflict("sync_meta", null, ContentValues().apply {
+                put("key", "document_v2_pull_seq"); put("value", result.nextSeq.toString())
+            }, SQLiteDatabase.CONFLICT_REPLACE)
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
@@ -645,7 +741,7 @@ class LumenDatabase(context: Context, private val vault: KeyVault) :
 
     fun wipe() {
         val db = writableDatabase
-        listOf("objects", "types", "tombstones", "assets", "outbox", "sync_meta", "widget_tasks", "journal_days").forEach {
+        listOf("objects", "types", "tombstones", "assets", "outbox", "blocked_outbox", "sync_meta", "widget_tasks", "journal_days").forEach {
             db.delete(it, null, null)
         }
         if (ftsAvailable) db.delete("objects_fts", null, null)

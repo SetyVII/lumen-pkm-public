@@ -1,0 +1,58 @@
+{
+  "device_id": "fixture-phone",
+  "operations": [
+    {
+      "op_id": "fixture-media-owner",
+      "action": "put",
+      "object": {
+        "id": "fixture-photo",
+        "type_id": "image",
+        "title": "Selected photo",
+        "properties": {
+          "asset_id": "fixture-photo-png",
+          "image_asset_id": "fixture-photo-png",
+          "media_state": "upload_pending"
+        },
+        "document": {
+          "schema_version": 2,
+          "blocks": []
+        }
+      }
+    },
+    {
+      "op_id": "fixture-media-upload",
+      "action": "asset",
+      "asset": {
+        "id": "fixture-photo-png",
+        "object_id": "fixture-photo",
+        "name": "photo.png",
+        "mime": "image/png",
+        "data_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="
+      }
+    },
+    {
+      "op_id": "fixture-media-notes",
+      "action": "put",
+      "object": {
+        "id": "fixture-media-note",
+        "type_id": "note",
+        "title": "Photo notes",
+        "document": {
+          "schema_version": 2,
+          "blocks": [
+            {
+              "id": "fixture-image-node",
+              "type": "image",
+              "attrs": {
+                "asset_id": "fixture-photo-png",
+                "caption": "Selected local image",
+                "width": 320,
+                "alignment": "center"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

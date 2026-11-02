@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -109,7 +110,7 @@ func TestCompleteRecurringTaskCopiesDefinitionAndLogsOccurrence(t *testing.T) {
 		t.Fatalf("task schema: %s", rr.Body.String())
 	}
 	task := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "task", "title": "Water plants", "content": "Use the blue can",
+		"type_id": "task", "title": "Water plants", "document": documentFixture("Use the blue can"),
 		"properties": map[string]any{
 			"status": "todo", "priority": 2, "due_date": "2026-10-30", "time": "09:00",
 			"context_id": project.ID, "context": project.ID, "tags": []string{tag.ID},
@@ -138,7 +139,7 @@ func TestCompleteRecurringTaskCopiesDefinitionAndLogsOccurrence(t *testing.T) {
 	if next.Properties["previous_occurrence_id"] != task.ID {
 		t.Fatalf("lineage missing: %+v", next.Properties)
 	}
-	if next.Content != "" || next.Properties["rich_text"] != nil || next.Properties["occurrences"] != nil || next.Properties["completed_at"] != nil {
+	if next.Content != "" || next.Document == nil || len(next.Document.Blocks) != 0 || next.Properties["rich_text"] != nil || next.Properties["occurrences"] != nil || next.Properties["completed_at"] != nil {
 		t.Fatalf("instance state leaked into the next occurrence: %+v", next)
 	}
 	recurrence, ok := next.Properties["recurrence"].(map[string]any)
@@ -159,7 +160,7 @@ func TestCompleteRecurringTaskCopiesDefinitionAndLogsOccurrence(t *testing.T) {
 	if completed.Properties["status"] != "done" || completed.Properties["next_occurrence_id"] != next.ID {
 		t.Fatalf("parent not marked done or not linked: %+v", completed.Properties)
 	}
-	if completed.Content != "Use the blue can" || completed.Properties["rich_text"] != "<p>Use the blue can</p>" {
+	if completed.Content != "Use the blue can" || !reflect.DeepEqual(completed.Document, task.Document) {
 		t.Fatal("completing the task rewrote its notes")
 	}
 	entries, ok := completed.Properties["occurrences"].([]any)

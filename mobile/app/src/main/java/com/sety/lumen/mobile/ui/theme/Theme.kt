@@ -14,10 +14,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/**
- * Tokens measured from the Capacities Android reference (dark theme).
- * The neutral graphite ramp replaces the previous green-tinted surfaces.
- */
+
 object LumenColors {
     val Background = Color(0xFF151518)
     val BackgroundDeep = Color(0xFF0D0D10)

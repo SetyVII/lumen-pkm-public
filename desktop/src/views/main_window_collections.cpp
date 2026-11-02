@@ -1,9 +1,5 @@
 #include "main_window.hpp"
 
-// Desktop stage "collections-ui": curated, ordered lists of objects of ONE
-// type (Capacities: https://docs.capacities.io/reference/collections).
-// A collection is an ordinary object of the default type `collection`; every
-// mutation goes through the collection endpoints of the backend contract.
 
 namespace {
 // A collection chip accepts objects dragged from list/gallery/kanban cards
@@ -525,8 +521,6 @@ QMenu *MainWindow::buildObjectMenu(const QString &objectId, const QString &colle
     // nothing useful to offer on a collection object's own menu.
     if (typeId == "collection")
         return menu;
-    // D5 (Capacities templates): rows can save their object as a template of
-    // its type, or drop the flag when it already is one.
     menu->addAction(LumenIcons::icon("package-open"),
                     objectIsTemplate(object) ? "Unsave template" : "Save as template",
                     [this, objectId, object] {

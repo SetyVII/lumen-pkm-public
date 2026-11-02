@@ -5,17 +5,6 @@
 
 #include <algorithm>
 
-// Desktop stage "templates-ui" (D5): Capacities templates
-// (https://docs.capacities.io/reference/templates). A template is an
-// ordinary object of its type flagged `properties.is_template: true`
-// (contracts/SYNC.md "Templates"); creating an object can start from a
-// template, a type can declare a default template, and the journal applies
-// it on lazy creation. The server already excludes flagged objects from
-// GET /v1/objects / GET /v1/search, so the desktop keeps a separate mirror
-// (`templates`, loaded with include_templates=true) and never lets flagged
-// objects into the general `objects` cache: All/Recent/Untagged tabs,
-// sidebar counts and searches stay template-free without the client
-// fighting the backend.
 
 namespace {
 QJsonArray idArrayFromList(const QStringList &ids) {
@@ -190,7 +179,7 @@ void MainWindow::setObjectTemplateFlag(const QString &objectId, bool flagged) {
     else
         properties.remove("is_template");
     saveLabel->setText(flagged ? "Saving as template…" : "Unsaving template…");
-    api.patch("/v1/objects/" + objectId, QJsonObject{{"properties", properties}},
+    api.patch("/v1/objects/" + objectId, QJsonObject{{"properties", properties}, {"base_revision", source.value("revision")}},
               [this, objectId, flagged](QJsonValue v, QString err) {
                   if (!err.isEmpty()) {
                       error("Could not update the template flag: " + err);

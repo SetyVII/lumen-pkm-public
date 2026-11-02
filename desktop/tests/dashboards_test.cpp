@@ -273,9 +273,6 @@ int main(int argc, char **argv) {
     pass &= check(waitFor([&] { return emptyTitle(window) == "No collections yet"; }),
                   "Collections empty state");
 
-    // 11. The "+" menu removes a built-in section per type, persists the
-    //     choice in QSettings and falls back to All when removing the active
-    //     section. (Capacities: "+" adds, "Remove" hides for this type.)
     window.showCollection("book");
     pass &= clickSection(window, "untagged");
     pass &= check(waitFor([&] { return activeViews(window) && activeViews(window)->visibleIds() == untaggedBooks(); }),

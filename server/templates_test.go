@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"lumen/server/internal/document"
 	"strings"
 	"testing"
 	"time"
@@ -72,17 +73,15 @@ func TestFromTemplateCopiesPropertiesBlocksAndLinks(t *testing.T) {
 	app, _, _ := makeApp(t)
 	tag := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "tag", "title": "Template tag"}))
 	tpl := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "project", "title": "Weekly {date:long}", "content": "Template body",
+		"type_id": "project", "title": "Weekly {date:long}", "document": document.Document{SchemaVersion: 2, Blocks: []document.Node{
+			{ID: "template-block-a", Type: "paragraph", Content: []document.Inline{{Type: "text", Text: "Template body", Marks: map[string]any{"bold": true}}}},
+			{ID: "template-block-b", Type: "heading", Attrs: map[string]any{"level": 2}, Content: []document.Inline{{Type: "text", Text: "Two"}}},
+		}},
 		"properties": map[string]any{
 			"is_template": true,
 			"status":      "active",
 			"due_date":    "{date}",
 			"tags":        []string{tag.ID},
-			"rich_text":   "<p>Template body</p>",
-			"blocks": []any{
-				map[string]any{"id": "template-block-a", "type": "paragraph", "text": "One", "runs": []any{map[string]any{"text": "One", "bold": true}}},
-				map[string]any{"id": "template-block-b", "type": "heading", "level": float64(2), "text": "Two"},
-			},
 		},
 		"links": []string{tag.ID},
 	}))
@@ -92,7 +91,7 @@ func TestFromTemplateCopiesPropertiesBlocksAndLinks(t *testing.T) {
 	if created.ID == tpl.ID || created.TypeID != "project" || created.Title != "Weekly October 31, 2026" {
 		t.Fatalf("unexpected created object: %+v", created)
 	}
-	if created.Content != "Template body" || created.Properties["status"] != "active" || created.Properties["due_date"] != "2026-10-31" {
+	if created.Content != "Template body\nTwo" || created.Properties["status"] != "active" || created.Properties["due_date"] != "2026-10-31" {
 		t.Fatalf("properties or content were not copied: %+v", created.Properties)
 	}
 	if _, exists := created.Properties["is_template"]; exists {
@@ -105,27 +104,25 @@ func TestFromTemplateCopiesPropertiesBlocksAndLinks(t *testing.T) {
 	if len(created.Links) != 1 || created.Links[0] != tag.ID {
 		t.Fatalf("explicit links were not copied: %+v", created.Links)
 	}
-	blocks, ok := created.Properties["blocks"].([]any)
-	if !ok || len(blocks) != 2 {
-		t.Fatalf("blocks were not copied: %#v", created.Properties["blocks"])
+	if created.Document == nil || len(created.Document.Blocks) != 2 {
+		t.Fatal("canonical blocks were not copied")
 	}
+	blocks := created.Document.Blocks
 	seen := map[string]bool{}
-	for _, raw := range blocks {
-		block := raw.(map[string]any)
-		id, _ := block["id"].(string)
-		if id == "" || id == "template-block-a" || id == "template-block-b" || seen[id] {
-			t.Fatalf("block id was not freshly minted: %#v", block)
+	for _, block := range blocks {
+		if block.ID == "" || block.ID == "template-block-a" || block.ID == "template-block-b" || seen[block.ID] {
+			t.Fatalf("block id was not freshly minted: %+v", block)
 		}
-		seen[id] = true
+		seen[block.ID] = true
 	}
-	if blocks[0].(map[string]any)["text"] != "One" || blocks[1].(map[string]any)["level"] != float64(2) {
-		t.Fatalf("block payload changed during copy: %#v", blocks)
+	if blocks[0].Content[0].Text != "Template body" || blocks[0].Content[0].Marks["bold"] != true || blocks[1].Attrs["level"] != float64(2) {
+		t.Fatalf("canonical marks or heading changed during copy: %+v", blocks)
 	}
 	original := objectFrom(t, api(t, app, "GET", "/v1/objects/"+tpl.ID, nil))
-	originalBlocks := original.Properties["blocks"].([]any)
-	if originalBlocks[0].(map[string]any)["id"] != "template-block-a" || !isTemplateObject(original) {
+	if original.Document.Blocks[0].ID != "template-block-a" || !isTemplateObject(original) {
 		t.Fatal("template was mutated by applying it")
 	}
+
 	// Deep copy: editing the new object must not change the template.
 	objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+created.ID, map[string]any{"properties": map[string]any{"status": "done"}}))
 	original = objectFrom(t, api(t, app, "GET", "/v1/objects/"+tpl.ID, nil))
@@ -215,11 +212,10 @@ func TestDateVariableFormats(t *testing.T) {
 func TestTypeDefaultTemplateValidationAndJournal(t *testing.T) {
 	app, _, _ := makeApp(t)
 	tpl := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "journal", "title": "Daily {date:long}", "content": "Daily body",
+		"type_id": "journal", "title": "Daily {date:long}", "document": documentFixture("Daily body"),
 		"properties": map[string]any{
 			"is_template": true,
 			"date":        "{date}",
-			"blocks":      []any{map[string]any{"id": "daily-block", "type": "paragraph", "text": "Daily body"}},
 		},
 	}))
 	if rr := api(t, app, "POST", "/v1/types", map[string]any{
@@ -247,10 +243,10 @@ func TestTypeDefaultTemplateValidationAndJournal(t *testing.T) {
 	if journal.Properties["date"] != "2026-10-31" || journal.Properties["is_template"] != nil {
 		t.Fatalf("journal properties are wrong: %#v", journal.Properties)
 	}
-	blocks, ok := journal.Properties["blocks"].([]any)
-	if !ok || len(blocks) != 1 || blocks[0].(map[string]any)["id"] == "daily-block" {
-		t.Fatalf("journal blocks were not copied with fresh ids: %#v", journal.Properties["blocks"])
+	if journal.Document == nil || len(journal.Document.Blocks) != 1 || journal.Document.Blocks[0].ID == tpl.Document.Blocks[0].ID {
+		t.Fatalf("journal canonical blocks were not copied with fresh ids: %+v", journal.Document)
 	}
+
 	again := objectFrom(t, api(t, app, "GET", "/v1/journal/2026-10-31?apply_default_template=true", nil))
 	if again.Revision != journal.Revision {
 		t.Fatal("applying the default template again changed an existing journal note")
@@ -393,7 +389,7 @@ func TestSyncPushUnflaggingTemplateClearsDefault(t *testing.T) {
 		"operations": []any{map[string]any{
 			"op_id": "op-unflag-template-1", "action": "put", "base_revision": tpl.Revision,
 			"object": map[string]any{
-				"id": tpl.ID, "type_id": "project", "title": tpl.Title, "content": "",
+				"id": tpl.ID, "type_id": "project", "title": tpl.Title, "document": documentFixture(""),
 				"properties": map[string]any{"is_template": false}, "links": []string{},
 				"created_at": tpl.CreatedAt, "updated_at": now(),
 			},
@@ -453,14 +449,20 @@ func TestCaptureIgnoresWebTemplatesForDuplicateDetection(t *testing.T) {
 	}
 }
 
-func TestFromTemplateRejectsInvalidBlocks(t *testing.T) {
+func TestTemplateCreationRejectsInvalidCanonicalBlocksBeforePersistence(t *testing.T) {
 	app, _, _ := makeApp(t)
-	tpl := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "note", "title": "Broken blocks", "properties": map[string]any{"is_template": true, "blocks": "not-an-array"},
-	}))
-	rr := api(t, app, "POST", "/v1/objects/from-template", map[string]any{"template_id": tpl.ID})
-	if rr.Code != 400 || !strings.Contains(rr.Body.String(), "blocks") {
-		t.Fatalf("invalid blocks were accepted: %d %s", rr.Code, rr.Body.String())
+	bad := documentFixture("invalid duplicate")
+	bad.Blocks = append(bad.Blocks, bad.Blocks[0])
+	rr := api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Broken blocks", "document": bad, "properties": map[string]any{"is_template": true}})
+	if rr.Code != 400 {
+		t.Fatalf("invalid template document accepted: %d %s", rr.Code, rr.Body.String())
+	}
+	objects, err := app.store.Objects()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(objects) != 0 {
+		t.Fatal("invalid template was persisted")
 	}
 }
 

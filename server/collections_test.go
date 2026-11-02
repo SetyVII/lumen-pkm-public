@@ -344,7 +344,7 @@ func TestCollectionSyncPushCannotChangeItemType(t *testing.T) {
 		"operations": []any{map[string]any{
 			"op_id": "op-collection-item-type-1", "action": "put", "base_revision": collection.Revision,
 			"object": map[string]any{
-				"id": collection.ID, "type_id": "collection", "title": collection.Title, "content": "",
+				"id": collection.ID, "type_id": "collection", "title": collection.Title, "document": collection.Document,
 				"properties": map[string]any{"item_type_id": "person", "items": []string{}},
 				"links":      []string{}, "created_at": collection.CreatedAt, "updated_at": now(),
 			},

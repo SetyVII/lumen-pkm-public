@@ -504,7 +504,7 @@ int main(int argc, char **argv) {
         editor.setTextCursor(QTextCursor(editor.document()->firstBlock()));
         QTest::keyClick(&editor, Qt::Key_G, Qt::ControlModifier);
         process();
-        require(blockStyle(editor.document()->firstBlock()) == "group",
+        require(editor.canonicalDocument().value("blocks").toArray().first().toObject().value("type") == "group",
                 "Ctrl+G without a selection keeps today's single-block group");
         // Selección dentro de un solo bloque: mismo comportamiento actual.
         editor.clear(); process();
@@ -515,7 +515,7 @@ int main(int argc, char **argv) {
         editor.setTextCursor(inside);
         editor.groupSelection();
         process();
-        require(blockStyle(editor.document()->firstBlock()) == "group",
+        require(editor.canonicalDocument().value("blocks").toArray().first().toObject().value("type") == "group",
                 "a selection inside one block keeps today's single-block group");
 
         // ---- Ctrl+G agrupa una selección de varios bloques -------------------
@@ -578,12 +578,12 @@ int main(int argc, char **argv) {
         editor.setPlainText("grupo suelto"); process();
         editor.setTextCursor(QTextCursor(editor.document()->firstBlock()));
         editor.applyBlockStyle("group"); process();
-        require(editor.blockInGroup(editor.document()->firstBlock()),
+        require(editor.blockInGroup(editor.textCursor().block()),
                 "a group-styled block counts as being in a group");
-        editor.ungroupBlock(editor.document()->firstBlock());
+        editor.ungroupBlock(editor.textCursor().block());
         process();
-        require(blockStyle(editor.document()->firstBlock()) == "paragraph",
-                "ungrouping a legacy single-block group returns it to a paragraph");
+        require(editor.canonicalDocument().value("blocks").toArray().first().toObject().value("type") == "paragraph" && editor.toPlainText().contains("grupo suelto"),
+                "ungrouping a single-block container retains its paragraph and text");
 
         // ---- mover un miembro fuera del grupo lo saca de la caja ------------
         editor.clear(); process();
@@ -605,8 +605,9 @@ int main(int argc, char **argv) {
         editor.setPlainText("hello reference"); process();
         const QTextBlock helloBlock = editor.document()->firstBlock();
         const QString helloId = RichEditor::blockId(helloBlock);
+        editor.setDocumentObjectId("reference-object");
         editor.copyBlockReference(helloBlock);
-        require(QGuiApplication::clipboard()->text() == "lumen://block/" + helloId,
+        require(QGuiApplication::clipboard()->text() == "lumen://block/" + helloId + "?object_id=reference-object",
                 "copy block reference puts lumen://block/<block-id> on the clipboard");
 
         // ---- pegar una referencia en un bloque vacío crea el embed ----------
@@ -625,7 +626,7 @@ int main(int argc, char **argv) {
                 "a block reference pasted into an empty block embeds the block");
         bool embedChip = false;
         for (const auto &run : embedObject.value("runs").toArray())
-            if (run.toObject().value("href").toString() == "lumen://block/" + helloId &&
+            if (run.toObject().value("href").toString() == "lumen://block/" + helloId + "?object_id=reference-object" &&
                 run.toObject().value("text").toString().contains("hello reference"))
                 embedChip = true;
         require(embedChip,
@@ -648,7 +649,7 @@ int main(int argc, char **argv) {
                 "an inline paste keeps the block a paragraph");
         bool inlineChip = false;
         for (const auto &run : inlineObject.value("runs").toArray())
-            if (run.toObject().value("href").toString() == "lumen://block/" + sourceId &&
+            if (run.toObject().value("href").toString() == "lumen://block/" + sourceId + "?object_id=reference-object" &&
                 run.toObject().value("text").toString().contains("the source"))
                 inlineChip = true;
         require(inlineChip, "an inline paste inserts a block-reference chip run");

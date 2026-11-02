@@ -1,0 +1,381 @@
+{
+  "schema_version": 2,
+  "blocks": [
+    {
+      "id": "p",
+      "type": "paragraph",
+      "attrs": {
+        "alignment": "left",
+        "future_semantics": {
+          "retained": true
+        }
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "Hola 👩🏽‍💻, café",
+          "marks": {
+            "bold": true,
+            "highlight": "#ffee00"
+          }
+        },
+        {
+          "type": "break"
+        },
+        {
+          "type": "object_ref",
+          "object_id": "book",
+          "label": "Libro"
+        },
+        {
+          "type": "link",
+          "text": " sitio",
+          "href": "https://example.org"
+        },
+        {
+          "type": "block_ref",
+          "object_id": "source",
+          "block_id": "quoted",
+          "label": " cita"
+        },
+        {
+          "type": "math",
+          "latex": "x^2"
+        },
+        {
+          "type": "temporal",
+          "attrs": {
+            "kind": "datetime",
+            "start": "2026-11-02T02:17:00+01:00",
+            "end": "2026-11-02T03:17:00+01:00",
+            "timezone": "Europe/Madrid"
+          }
+        }
+      ]
+    },
+    {
+      "id": "heading",
+      "type": "heading",
+      "attrs": {
+        "level": 2
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "Encabezado"
+        }
+      ]
+    },
+    {
+      "id": "roman",
+      "type": "list_item",
+      "attrs": {
+        "kind": "roman",
+        "case": "upper",
+        "start": 1
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "Principal"
+        }
+      ],
+      "children": [
+        {
+          "id": "task",
+          "type": "list_item",
+          "attrs": {
+            "kind": "task",
+            "checked": true
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Hija"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "quote",
+      "type": "quote",
+      "content": [
+        {
+          "type": "text",
+          "text": "Cita"
+        }
+      ]
+    },
+    {
+      "id": "group",
+      "type": "group",
+      "children": [
+        {
+          "id": "toggle",
+          "type": "toggle",
+          "attrs": {
+            "expanded": false
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Desplegable"
+            }
+          ],
+          "children": [
+            {
+              "id": "inside",
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Oculto, conservado"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "code",
+      "type": "code",
+      "attrs": {
+        "source": "const x = \"á\";\n",
+        "language": "javascript"
+      }
+    },
+    {
+      "id": "math",
+      "type": "math",
+      "attrs": {
+        "source": "\\frac{1}{2}"
+      }
+    },
+    {
+      "id": "divider",
+      "type": "divider"
+    },
+    {
+      "id": "image",
+      "type": "image",
+      "attrs": {
+        "asset_id": "asset-image",
+        "object_id": "image-object",
+        "width": 320,
+        "height": 240,
+        "alignment": "center",
+        "caption": "Una imagen",
+        "fit": "contain"
+      }
+    },
+    {
+      "id": "embed",
+      "type": "object_embed",
+      "attrs": {
+        "object_id": "pdf-object",
+        "view": "wide_card"
+      }
+    },
+    {
+      "id": "columns",
+      "type": "columns",
+      "children": [
+        {
+          "id": "column-a",
+          "type": "column",
+          "attrs": {
+            "width": 1
+          },
+          "children": [
+            {
+              "id": "left",
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Izquierda"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "column-b",
+          "type": "column",
+          "attrs": {
+            "width": 2
+          },
+          "children": [
+            {
+              "id": "right",
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Derecha"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "table",
+      "type": "table",
+      "attrs": {
+        "columns": [
+          {
+            "id": "name-column",
+            "width": 180
+          },
+          {
+            "id": "value-column",
+            "width": 96
+          }
+        ]
+      },
+      "children": [
+        {
+          "id": "row-0",
+          "type": "table_row",
+          "attrs": {
+            "header": true
+          },
+          "children": [
+            {
+              "id": "cell-0-0",
+              "type": "table_cell",
+              "children": [
+                {
+                  "id": "cell-text-0-0",
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Nombre"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "cell-0-1",
+              "type": "table_cell",
+              "children": [
+                {
+                  "id": "cell-text-0-1",
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Valor"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "row-1",
+          "type": "table_row",
+          "attrs": {
+            "header": false
+          },
+          "children": [
+            {
+              "id": "cell-1-0",
+              "type": "table_cell",
+              "children": [
+                {
+                  "id": "cell-text-1-0",
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Ana"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "cell-1-1",
+              "type": "table_cell",
+              "children": [
+                {
+                  "id": "cell-text-1-1",
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "10"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "row-2",
+          "type": "table_row",
+          "attrs": {
+            "header": false
+          },
+          "children": [
+            {
+              "id": "cell-2-0",
+              "type": "table_cell",
+              "children": [
+                {
+                  "id": "cell-text-2-0",
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Luis"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "cell-2-1",
+              "type": "table_cell",
+              "children": [
+                {
+                  "id": "cell-text-2-1",
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "2"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "date",
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "temporal",
+          "attrs": {
+            "kind": "date",
+            "start": "2026-11-02",
+            "end": "2026-11-03"
+          }
+        }
+      ]
+    }
+  ]
+}

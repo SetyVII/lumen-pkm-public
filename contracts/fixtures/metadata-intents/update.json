@@ -1,0 +1,6 @@
+{
+  "base_revision": 7,
+  "op_id": "fixture-metadata-field-update",
+  "property_updates": {"summary": "New summary", "review_status": "done"},
+  "remove_properties": ["obsolete_custom_field"]
+}

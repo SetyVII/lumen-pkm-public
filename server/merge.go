@@ -5,14 +5,6 @@ import (
 	"strings"
 )
 
-// Object merge (Capacities: reference/content-types#merge-two-objects).
-//
-// The object in the URL is the SOURCE: it is merged into the TARGET and then
-// moved to the trash. The target keeps its identity, title and non-empty
-// property values; empty properties are filled from the source, list
-// properties are unioned, the source body is appended to the target body, and
-// every reference to the source is rewritten to the target. The source is
-// never hard-deleted: a restore brings back a (degraded) duplicate.
 
 type mergeRequest struct {
 	TargetID           string `json:"target_id"`
@@ -304,11 +296,26 @@ func (a *App) mergeObjectData(source, target Object) (Object, []Record, [][2]str
 		}
 	}
 
-	// Blocks are an optional richer representation of the body. They are
-	// appended only when both objects have them; otherwise they are dropped so
-	// no client can render a stale view that hides the appended text. The
-	// plain-text content is always canonical.
-	contentChanged := strings.TrimSpace(source.Content) != ""
+	// Merge the canonical trees without flattening. IDs are local to objects,
+	// so colliding source IDs are remapped together with compound references.
+	blockIDRemap := map[string]string{}
+	if merged.Document != nil || source.Document != nil {
+		targetDoc, e := canonicalDocumentFromLegacy(merged)
+		if e != nil {
+			return target, nil, nil, e
+		}
+		sourceDoc, e := canonicalDocumentFromLegacy(source)
+		if e != nil {
+			return target, nil, nil, e
+		}
+		blockIDRemap = avoidCanonicalMergeIDCollisions(targetDoc, &sourceDoc)
+		targetDoc.Blocks = append(targetDoc.Blocks, sourceDoc.Blocks...)
+		if e = setCanonicalDocument(&merged, targetDoc); e != nil {
+			return target, nil, nil, e
+		}
+		rewriteCanonicalMergedReferences(&merged, source.ID, target.ID, blockIDRemap)
+	}
+	contentChanged := strings.TrimSpace(source.Content) != "" && merged.Document == nil
 	blocksMerged := false
 	if targetBlocks, ok := merged.Properties["blocks"].([]any); ok {
 		if sourceBlocks, ok := source.Properties["blocks"].([]any); ok && len(sourceBlocks) > 0 {
@@ -359,7 +366,8 @@ func (a *App) mergeObjectData(source, target Object) (Object, []Record, [][2]str
 		}
 		links, linksChanged := rewriteReferenceList(other.Links, source.ID, target.ID, other.ID)
 		propertiesChanged := rewriteObjectPropertyReferences(&other, otherSchemas, source.ID, target.ID, other.ID)
-		if !linksChanged && !propertiesChanged {
+		documentChanged := rewriteCanonicalMergedReferences(&other, source.ID, target.ID, blockIDRemap)
+		if !linksChanged && !propertiesChanged && !documentChanged {
 			continue
 		}
 		if linksChanged {

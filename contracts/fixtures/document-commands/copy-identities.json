@@ -1,0 +1,109 @@
+{
+  "input": {
+    "schema_version": 2,
+    "blocks": [
+      {
+        "id": "a",
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "Uno"
+          }
+        ],
+        "children": [
+          {
+            "id": "child",
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Hijo"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "b",
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "Dos"
+          }
+        ]
+      }
+    ]
+  },
+  "commands": [
+    {
+      "type": "copy",
+      "node_id": "a",
+      "position": 2,
+      "new_ids": {
+        "a": "copy-a",
+        "child": "copy-child"
+      }
+    }
+  ],
+  "expected": {
+    "schema_version": 2,
+    "blocks": [
+      {
+        "id": "a",
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "Uno"
+          }
+        ],
+        "children": [
+          {
+            "id": "child",
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Hijo"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "b",
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "Dos"
+          }
+        ]
+      },
+      {
+        "id": "copy-a",
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "Uno"
+          }
+        ],
+        "children": [
+          {
+            "id": "copy-child",
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Hijo"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

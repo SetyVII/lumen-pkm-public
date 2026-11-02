@@ -268,7 +268,7 @@ class FakeApi final : public QObject {
                                     ? QJsonDocument(lastValue.toArray()).toJson(QJsonDocument::Compact)
                                     : QJsonDocument(lastValue.toObject()).toJson(QJsonDocument::Compact);
         QByteArray text = "HTTP/1.1 " + QByteArray::number(status) + " " + reason.toUtf8() + "\r\n";
-        text += "Content-Type: application/json\r\n";
+        text += "Content-Type: application/json\r\nX-Lumen-Document-Version: 2\r\n";
         text += "Content-Length: " + QByteArray::number(body.size()) + "\r\n";
         text += "Connection: close\r\n\r\n";
         text += body;

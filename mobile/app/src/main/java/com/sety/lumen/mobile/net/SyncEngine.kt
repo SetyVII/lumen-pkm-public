@@ -8,13 +8,20 @@ import com.sety.lumen.mobile.data.SecureMedia
 import com.sety.lumen.mobile.data.SettingsStore
 import com.sety.lumen.mobile.data.SyncConflict
 import com.sety.lumen.mobile.data.nowIso
+import com.sety.lumen.mobile.data.documentOutboxWindow
+import com.sety.lumen.mobile.data.readyDocumentBatch
+import com.sety.lumen.mobile.data.consumeSyncPullPages
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import android.util.Base64
 import org.json.JSONObject
 import java.io.File
 import java.time.Instant
 import java.time.LocalDate
+
+private val mobileSyncMutex = Mutex()
 
 data class SyncOutcome(
     val success: Boolean,
@@ -31,7 +38,7 @@ class SyncEngine(
     private val settings: SettingsStore,
     private val filesDir: File,
 ) {
-    suspend fun syncNow(): SyncOutcome = withContext(Dispatchers.IO) {
+    suspend fun syncNow(): SyncOutcome = mobileSyncMutex.withLock { withContext(Dispatchers.IO) {
         if (!vault.isUnlocked && !vault.unlockWithDevice()) {
             return@withContext SyncOutcome(false, "Lumen está bloqueado")
         }
@@ -47,77 +54,82 @@ class SyncEngine(
         var pushWarning: String? = null
         val conflicts = mutableListOf<SyncConflict>()
         runCatching {
-            val pending = db.outbox(100)
-            val batch = mutableListOf<JSONObject>()
-            var batchBytes = 0L
-            val maxBatchBytes = 18L * 1024L * 1024L // ~18 MB raw (~24 MB Base64), well below server 64 MB limit
-
-            suspend fun flushBatch(): String? {
-                if (batch.isEmpty()) return null
-                val operations = batch.toList()
-                batch.clear()
-                batchBytes = 0L
-                val result = api.push(settings.deviceId, settings.lastSeq, operations)
-                db.confirmPush(result.applied, operations)
-                val failed = operations.mapNotNull { it.optString("op_id") }.filter { id -> result.errors.any { it.opId == id } }
-                db.markOutboxAttempt(failed)
-                pushed += result.applied.size
-                conflicts += result.conflicts
-                if (result.errors.isNotEmpty()) {
-                    return "El servidor rechazó ${result.errors.size} operación(es): ${result.errors.first().error}"
+            var dispatched = 0
+            while (dispatched < 1000) {
+                // Re-read after each ACK: never send two snapshots at the same
+                // old base and never modify a payload which may have reached the server.
+                val seeds = db.outbox(100)
+                if (seeds.isEmpty()) break
+                val window = documentOutboxWindow(seeds, db::pendingAssetOperation, db::firstPendingPut)
+                val ready = readyDocumentBatch(window, db::pendingAssetOperation, db::firstPendingPut)
+                check(ready.isNotEmpty()) { "Dependencias pendientes sin avance; los cambios permanecen guardados" }
+                val batch = mutableListOf<OutboxOp>()
+                var bytes = 0L
+                for (op in ready) {
+                    val size = if(op.action == "asset") op.payload.optString("local_path").takeIf(String::isNotBlank)?.let{File(it).length()} ?: 0L
+                        else op.payload.toString().toByteArray(Charsets.UTF_8).size.toLong()
+                    if(batch.isNotEmpty() && bytes+size > 18L*1024*1024) break
+                    batch += op; bytes += size
                 }
-                return null
-            }
-
-            for (op in orderOps(pending)) {
-                val isAsset = op.payload.optString("action") == "asset"
-                val fileLen = if (isAsset) {
-                    op.payload.optString("local_path").takeIf { it.isNotBlank() }?.let { File(it).length() } ?: 0L
-                } else 0L
-
-                if (batch.isNotEmpty() && batchBytes + fileLen > maxBatchBytes) {
-                    val err = flushBatch()
-                    if (err != null) {
-                        pushWarning = err
-                        return@runCatching err
-                    }
+                // Claim under the same DB transaction that reads payloads. An
+                // autosave may have coalesced a draft since window construction.
+                val claimed = db.claimOutbox(batch.map{it.opId})
+                if(claimed.isEmpty()) continue
+                val operations = claimed.map { expandOperation(it.payload).apply { put("object_id",it.objectId) } }
+                val result = api.push(settings.deviceId, db.meta("document_v2_pull_seq")?.toLongOrNull() ?: 0L, operations)
+                db.confirmPush(result.applied,operations,result.receipts,result.conflicts)
+                pushed += result.applied.size; conflicts += result.conflicts; dispatched += claimed.size
+                if(result.errors.isNotEmpty()) {
+                    pushWarning = "El servidor rechazó ${result.errors.size} operación(es): ${result.errors.first().error}"
+                    break
                 }
-                batch += expandOperation(op.payload).apply { put("object_id", op.objectId) }
-                batchBytes += fileLen
+                if(result.applied.isEmpty()) { pushWarning="El servidor no confirmó los cambios pendientes";break }
             }
-            flushBatch()?.also { pushWarning = it }
+            if(dispatched>=1000 && db.outbox(1).isNotEmpty() && pushWarning==null) pushWarning="Quedan cambios guardados pendientes; continúa la sincronización"
+            pushWarning
+
         }.onFailure { error ->
             return@withContext SyncOutcome(false, "Error al subir cambios: ${error.message}", endpoint)
         }.getOrNull()?.let { message ->
             settings.lastSyncMessage = message
         }
 
-        val pull = runCatching { api.pull(settings.lastSeq, settings.mediaSinceDate) }
-            .getOrElse { error ->
-                return@withContext SyncOutcome(false, "Error al descargar cambios: ${error.message}", endpoint, pushed)
-            }
-        db.applyPull(pull)
-        settings.lastSeq = pull.headSeq
+        var pulledCount=0
+        val progress=runCatching {
+            consumeSyncPullPages(db.meta("document_v2_pull_seq")?.toLongOrNull()?:0L,
+                fetch={cursor->api.pull(cursor,settings.mediaSinceDate)},apply={page->
+                    db.applyPull(page)
+                    settings.lastSeq=page.nextSeq
+                    pulledCount+=page.objects.size+page.types.size
+                })
+        }.getOrElse {error->
+            return@withContext SyncOutcome(false,"Descarga interrumpida; las páginas confirmadas se conservan: ${error.message}",endpoint,pushed,pulledCount,conflicts)
+        }
+        if(progress.hasMore)pushWarning=listOfNotNull(pushWarning,"Quedan páginas por descargar; continúa la sincronización").joinToString(" · ")
+        val blocked=db.blockedConflictCount()
+        if(blocked>0)pushWarning=listOfNotNull(pushWarning,"$blocked borrador(es) conservados y bloqueados por borrado remoto; requieren recuperación explícita").joinToString(" · ")
         runCatching { api.status().serverId }.getOrNull()?.takeIf { it.isNotBlank() }?.let { settings.serverId = it }
         val downloaded = downloadAssets(api, db.assets())
         settings.lastSyncAt = nowIso()
         settings.lastSyncMessage = buildString {
-            append("Sincronizado ")
+            append(if(pushWarning==null) "Sincronizado " else "Sincronización parcial ")
             append(java.time.LocalTime.now().withNano(0))
             if (pushed > 0) append(" · $pushed subida(s)")
-            if (pull.objects.size + pull.types.size > 0) append(" · ${pull.objects.size + pull.types.size} cambio(s)")
+            if (pulledCount > 0) append(" · $pulledCount cambio(s)")
             if (downloaded > 0) append(" · $downloaded medio(s)")
-            if (conflicts.isNotEmpty()) append(" · ${conflicts.size} conflicto(s) resuelto(s)")
+            if (conflicts.isNotEmpty()) append(" · ${conflicts.size} conflicto(s)")
             pushWarning?.let { append(" · ").append(it) }
         }
         SyncOutcome(
-            success = true,
+            success = pushWarning == null,
             message = settings.lastSyncMessage,
             endpoint = endpoint,
             pushed = pushed,
-            pulled = pull.objects.size + pull.types.size,
+            pulled = pulledCount,
             conflicts = conflicts,
         )
+    }
+
     }
 
     private fun resolveEndpoint(token: String): String? {
@@ -137,7 +149,7 @@ class SyncEngine(
                 if (candidate != configured && candidate.startsWith("http://")) {
                     settings.lastLanUrl = candidate
                 }
-                status.headSeq >= 0
+                status.headSeq >= 0 && status.protocol == "lumen-sync/2"
             }.getOrDefault(false)
             if (ok) return candidate
         }
@@ -161,36 +173,6 @@ class SyncEngine(
         }.onFailure {
             android.util.Log.w("LumenSync", "No se pudieron comprobar tipos personalizados: ${it.message}")
         }
-    }
-
-    /**
-     * Orders pending operations so that objects appear before the operations
-     * that link to them. The server drops relations it cannot resolve yet, so
-     * respecting the dependency order here preserves them instead of losing
-     * them on the first pass. Cycles are appended as-is: the server breaks the
-     * tie by dropping one direction.
-     */
-    private fun orderOps(pending: List<OutboxOp>): List<OutboxOp> {
-        val linksOf: (OutboxOp) -> Set<String> = { op ->
-            op.payload.optJSONObject("object")?.optJSONArray("links")
-                ?.let { arr -> (0 until arr.length()).mapNotNull { arr.optString(it) }.toSet() }
-                ?: emptySet()
-        }
-        val ids = pending.map { it.objectId }.toSet()
-        val ordered = mutableListOf<OutboxOp>()
-        val done = mutableSetOf<String>()
-        val rest = pending.toMutableList()
-        while (rest.isNotEmpty()) {
-            val ready = rest.filter { op -> linksOf(op).all { it in done || it !in ids } }
-            if (ready.isEmpty()) {
-                ordered += rest
-                break
-            }
-            ordered += ready
-            done += ready.map { it.objectId }
-            rest -= ready
-        }
-        return ordered
     }
 
     private fun expandOperation(op: JSONObject): JSONObject {

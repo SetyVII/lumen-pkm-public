@@ -46,5 +46,12 @@ node_modules/
 /research/
 /releases/
 /scratch/
-/docs/capacities-audit-2026-10-29/
-/docs/qa/2026-10-29-capacities-audit/
+
+# Local planning, reference captures and agent worktrees are not public source.
+.worktrees/
+/AGENTS.md
+/docs/design/
+/docs/tracking/
+/docs/qa/
+/docs/screenshots/
+/docs/archive/

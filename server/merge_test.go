@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -57,7 +58,7 @@ func TestMergeFillsEmptyPropertiesUnionsListsAndTrashesSource(t *testing.T) {
 	if merged.Revision <= target.Revision {
 		t.Fatalf("merge did not bump the target revision: %d -> %d", target.Revision, merged.Revision)
 	}
-	if merged.Content != "Target body\n\nSource body" {
+	if merged.Content != "Target body\nSource body" {
 		t.Fatalf("content was not appended: %q", merged.Content)
 	}
 	// The target keeps its own single values; empty ones are filled.
@@ -275,11 +276,11 @@ func TestMergeAppendsBlocksAndKeepsIdsStable(t *testing.T) {
 		},
 	}))
 	merged := objectFrom(t, api(t, app, "POST", "/v1/objects/"+source.ID+"/merge", map[string]any{"target_id": target.ID}))
-	blocks, ok := merged.Properties["blocks"].([]any)
-	if !ok || len(blocks) != 2 {
-		t.Fatalf("blocks were not appended: %#v", merged.Properties["blocks"])
+	blocks := merged.Document.Blocks
+	if len(blocks) != 2 {
+		t.Fatalf("blocks were not appended: %#v", blocks)
 	}
-	if blocks[0].(map[string]any)["id"] != "block-target" || blocks[1].(map[string]any)["id"] != "block-source" {
+	if blocks[0].ID != "block-target" || blocks[1].ID != "block-source" {
 		t.Fatalf("block ids were not preserved: %#v", blocks)
 	}
 	if _, exists := merged.Properties["rich_text"]; exists {
@@ -296,14 +297,14 @@ func TestMergeAppendsBlocksAndKeepsIdsStable(t *testing.T) {
 		"properties": map[string]any{"blocks": []any{map[string]any{"id": "same", "text": "B"}}},
 	}))
 	collided := objectFrom(t, api(t, app, "POST", "/v1/objects/"+second.ID+"/merge", map[string]any{"target_id": first.ID}))
-	collidedBlocks, ok := collided.Properties["blocks"].([]any)
-	if !ok || len(collidedBlocks) != 2 {
-		t.Fatalf("colliding blocks were not appended: %#v", collided.Properties["blocks"])
+	collidedBlocks := collided.Document.Blocks
+	if len(collidedBlocks) != 2 {
+		t.Fatalf("colliding blocks were not appended: %#v", collidedBlocks)
 	}
-	if collidedBlocks[0].(map[string]any)["id"] != "same" {
+	if collidedBlocks[0].ID != "same" {
 		t.Fatalf("target block id changed: %#v", collidedBlocks[0])
 	}
-	if collidedBlocks[1].(map[string]any)["id"] == "same" {
+	if collidedBlocks[1].ID == "same" {
 		t.Fatalf("colliding source block kept a duplicate id: %#v", collidedBlocks[1])
 	}
 }
@@ -323,8 +324,8 @@ func TestMergeWithEmptySourceContentKeepsTargetBody(t *testing.T) {
 	if merged.Content != "Target body" {
 		t.Fatalf("empty source changed the target body: %q", merged.Content)
 	}
-	if merged.Properties["blocks"] == nil || merged.Properties["rich_text"] != "<p>Target body</p>" {
-		t.Fatalf("rich formats were dropped without a content change: %#v", merged.Properties)
+	if !reflect.DeepEqual(merged.Document, target.Document) {
+		t.Fatal("empty source changed canonical target document")
 	}
 	if aliases := aliasesOf(t, merged); !sameStrings(aliases, []string{"Empty"}) {
 		t.Fatalf("aliases were not merged: %v", aliases)

@@ -31,11 +31,8 @@ class MainWindow : public QMainWindow {
     bool navigationPending = false;
     bool loading = false, dirty = false, saving = false, dark = true, compact = true, gallery = true,
          reduceMotion = false;
-    QString themePreset = "Capacities";
+    QString themePreset = "Grafito";
     int fontSize = 16;
-    // Find-in-page session (Capacities parity): the last query and options
-    // survive closing the bar and switching objects; the bar itself belongs to
-    // the one open object.
     QString findQuery_;
     bool findMatchCase_ = false, findWholeWord_ = false, findReplaceVisible_ = false;
     QTimer saveTimer, syncTimer;
@@ -78,19 +75,11 @@ class MainWindow : public QMainWindow {
     QSet<QString> knownObjectIds;
     QSet<QString> hiddenTypeCollections;
     QStringList recentObjectIds;
-    // Type dashboard (Capacities object dashboards): the active section of the
-    // open type page, the server-filtered id cache behind "No backlinks", and
-    // the per-type built-in tab visibility (persisted in QSettings).
     QString typeSection = "all";
     QHash<QString, QStringList> noBacklinkIds;
     QSet<QString> noBacklinkFetched, noBacklinkPending;
     QHash<QString, QPixmap> imageMemoryCache_;
-    // Desktop stage "templates-ui" (D5): Capacities templates
-    // (https://docs.capacities.io/reference/templates). A template is an
-    // ordinary object flagged `properties.is_template`. The server keeps
-    // flagged objects out of GET /v1/objects (they need
-    // include_templates=true), so the desktop mirrors them in this separate
-    // cache instead of letting them leak into the general listing cache.
+    QHash<QString, QList<QPointer<RichEditor>>> assetImageWaiters_;
     QJsonArray templates;
     QSet<QString> templatesFetched, templatesPending;
 
@@ -137,6 +126,7 @@ class MainWindow : public QMainWindow {
     void openObject(const QString &id);
     void wireEditor(RichEditor *edit, const QString &origin, bool preview = false);
     void ensureImageLoaded(RichEditor *edit, const QString &objectId);
+    void ensureAssetImageLoaded(RichEditor *edit, const QString &assetId);
     void loadEditor(RichEditor *edit, const QJsonObject &object);
     QWidget *calendarToolbar(const QString &selected);
     void renderEditor(bool journal);
@@ -229,11 +219,6 @@ class MainWindow : public QMainWindow {
     void showObjectMenu(const QString &objectId, const QPoint &globalPos);
     void fillObjectCollections(QWidget *panel, const QJsonArray &collections, const QString &objectId);
     void renderObjectCollections(QWidget *panel, const QString &objectId);
-    // Desktop stage "type-dashboards" (D4): Capacities object dashboards
-    // (https://docs.capacities.io/reference/content-types#object-dashboards and
-    // /reference/sections). Every type page shows a section tab bar ("All"
-    // plus built-in sections plus the saved queries of that type); each tab
-    // is the same LumenViews machinery over a different id set.
     static QStringList dashboardSectionKeys();
     static QString dashboardSectionLabel(const QString &section);
     QStringList visibleTypeSections(const QString &typeId) const;
@@ -252,11 +237,6 @@ class MainWindow : public QMainWindow {
                           QJsonObject baseSpec = {});
     void showTypeSection(const QString &typeId, const QString &section);
     void toggleTypeSection(const QString &typeId, const QString &section, bool visible);
-    // Desktop stage "templates-ui" (D5): Capacities templates surfaced over
-    // the backend contract (docs/implementation/backend/templates.md and
-    // contracts/SYNC.md "Templates"). Flagged objects are mirrored separately
-    // (see the `templates` member) so normal tabs, search and counts stay
-    // template-free exactly like the server's listings.
     static bool objectIsTemplate(const QJsonObject &object);
     QJsonObject templateById(const QString &id) const;
     QJsonArray templatesForType(const QString &typeId) const;
@@ -273,15 +253,6 @@ class MainWindow : public QMainWindow {
     bool templatesSectionVisible(const QString &typeId) const;
     QMenu *buildTemplateMenu(const QString &objectId);
     void showTemplateMenu(const QString &objectId, const QPoint &globalPos);
-    // Desktop stage "aliases-ui" (D6): Capacities aliases
-    // (https://docs.capacities.io/reference/properties#aliases) surfaced
-    // over the backend contract (docs/implementation/backend/aliases.md and
-    // contracts/SYNC.md "Aliases"). showAliasEditor is the per-object chip
-    // editor in the "…" Customize menu (page and preview dialogs alike);
-    // the object page shows the stored aliases under the title; the search
-    // surfaces (command palette, editor @-dropdown, view search) match
-    // aliases, and picking an alias-matched result inserts the alias as
-    // the link text while the link keeps the object id.
     void showAliasEditor(const QString &objectId, std::shared_ptr<PreviewSession> previewSession = {});
     void showTasks(const QString &tab = "inbox");
     void showGraph();

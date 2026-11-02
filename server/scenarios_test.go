@@ -80,15 +80,19 @@ func scenarioBlocksMarkdown(t *testing.T, app *App, blocks []Block) string {
 func scenarioCreateFromMarkdown(t *testing.T, app *App, typeID, title, markdown string) Object {
 	t.Helper()
 	blocks := scenarioMarkdownBlocks(t, app, markdown)
-	return objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": typeID, "title": title, "content": markdown,
-		"properties": map[string]any{"blocks": blocks},
-	}))
+	doc, err := canonicalDocumentFromBlocks(blocks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": typeID, "title": title, "document": doc}))
 }
 
 // scenarioObjectBlocks reads the stored block tree of an object.
 func scenarioObjectBlocks(t *testing.T, o Object) []Block {
 	t.Helper()
+	if o.Document != nil {
+		return documentMarkdownBlocks(*o.Document)
+	}
 	raw, ok := o.Properties["blocks"]
 	if !ok {
 		t.Fatalf("object %s has no blocks: %#v", o.ID, o.Properties)

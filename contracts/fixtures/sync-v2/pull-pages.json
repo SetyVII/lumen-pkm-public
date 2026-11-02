@@ -1,0 +1,116 @@
+{
+  "pages": [
+    {
+      "head_seq": 300,
+      "next_seq": 128,
+      "has_more": true,
+      "objects": [
+        {
+          "id": "page-note-a",
+          "type_id": "note",
+          "title": "page-note-a",
+          "created_at": "2026-11-02T00:00:00Z",
+          "updated_at": "2026-11-02T00:00:00Z",
+          "revision": 1,
+          "properties": {},
+          "links": [],
+          "document": {
+            "schema_version": 2,
+            "blocks": [
+              {
+                "id": "body",
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "First page"
+                  }
+                ]
+              }
+            ]
+          },
+          "content": "First page"
+        }
+      ],
+      "types": [],
+      "tombstones": [],
+      "assets": [],
+      "deleted": []
+    },
+    {
+      "head_seq": 302,
+      "next_seq": 302,
+      "has_more": false,
+      "objects": [
+        {
+          "id": "page-note-a",
+          "type_id": "note",
+          "title": "page-note-a",
+          "created_at": "2026-11-02T00:00:00Z",
+          "updated_at": "2026-11-02T00:00:00Z",
+          "revision": 2,
+          "properties": {},
+          "links": [],
+          "document": {
+            "schema_version": 2,
+            "blocks": [
+              {
+                "id": "body",
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Concurrent update"
+                  }
+                ]
+              }
+            ]
+          },
+          "content": "Concurrent update"
+        },
+        {
+          "id": "page-note-b",
+          "type_id": "note",
+          "title": "page-note-b",
+          "created_at": "2026-11-02T00:00:00Z",
+          "updated_at": "2026-11-02T00:00:00Z",
+          "revision": 1,
+          "properties": {},
+          "links": [],
+          "document": {
+            "schema_version": 2,
+            "blocks": [
+              {
+                "id": "body",
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Second page"
+                  }
+                ]
+              }
+            ]
+          },
+          "content": "Second page"
+        }
+      ],
+      "types": [],
+      "tombstones": [],
+      "assets": [],
+      "deleted": []
+    }
+  ],
+  "expected_after_first": {
+    "cursor": 128,
+    "has_more": true
+  },
+  "expected_final": {
+    "cursor": 302,
+    "object_ids": [
+      "page-note-a",
+      "page-note-b"
+    ],
+    "page_note_a_content": "Concurrent update"
+  }
+}

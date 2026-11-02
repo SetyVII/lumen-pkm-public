@@ -5,7 +5,7 @@ Extensión Manifest V3 en JavaScript sencillo, sin frameworks, dependencias, ana
 ## Chrome / Chromium
 
 1. Abre `chrome://extensions` y activa **Modo desarrollador**.
-2. Pulsa **Cargar descomprimida** y elige esta carpeta `extension/` o el zip `${LUMEN_WORKSPACE}/releases/0.6/lumen-extension-0.6-chromium.zip`.
+2. Pulsa **Cargar descomprimida** y elige esta carpeta `extension/` o el zip `a locally built package`.
 3. Abre Lumen desde la barra del navegador o con **Alt + Shift + L**.
 4. Introduce la URL de la API y el token del servidor. Por defecto usa `http://127.0.0.1:8765`.
 5. Autoriza únicamente el servidor elegido. **Ctrl + Enter** guarda; **Esc** cierra.
@@ -14,7 +14,7 @@ Requiere Chrome 120 o posterior. Los atajos pueden cambiarse en `chrome://extens
 
 ## Firefox
 
-Se entrega `${LUMEN_WORKSPACE}/releases/0.6/lumen-extension-0.6-firefox.zip` con un manifest específico: Firefox usa scripts de background, mientras Chromium usa un service worker. Requiere Firefox 140 o posterior. Su declaración de transmisión informa de contenido web y autenticación porque se envían la captura y el bearer token a tu propio servidor; no implica telemetría de terceros.
+Se entrega `a locally built package` con un manifest específico: Firefox usa scripts de background, mientras Chromium usa un service worker. Requiere Firefox 140 o posterior. Su declaración de transmisión informa de contenido web y autenticación porque se envían la captura y el bearer token a tu propio servidor; no implica telemetría de terceros.
 
 1. Abre `about:debugging#/runtime/this-firefox`.
 2. Pulsa **Cargar complemento temporal** y elige `manifest.json` dentro del zip de Firefox.
@@ -79,7 +79,7 @@ Para inspeccionar el popup sin instalar la extensión:
 pnpm preview
 ```
 
-Abre `http://127.0.0.1:8789/preview`: es una **vista previa con datos ficticios**, sin token real, sin llamadas a la API y sin acceso a tu navegador. Usa el HTML y CSS de producción. El 29 de octubre de 2026 se revisó en Chrome headless con un perfil temporal independiente: sin errores JavaScript, captura y conexión con **Ctrl + Enter**, rechazo visible del servidor HTTP remoto y origen de extensión legible. El botón de guardar queda visible dentro de los 600 px de altura del popup de Chromium; los avisos se desplazan a la vista cuando aparecen. La captura está en `../docs/screenshots/extension.png` y muestra expresamente datos ficticios. Esta revisión no instaló la extensión ni comprobó permisos o CORS de un navegador real.
+Abre `http://127.0.0.1:8789/preview`: es una **vista previa con datos ficticios**, sin token real, sin llamadas a la API y sin acceso a tu navegador. Usa el HTML y CSS de producción. El 29 de octubre de 2026 se revisó en Chrome headless con un perfil temporal independiente: sin errores JavaScript, captura y conexión con **Ctrl + Enter**, rechazo visible del servidor HTTP remoto y origen de extensión legible. El botón de guardar queda visible dentro de los 600 px de altura del popup de Chromium; los avisos se desplazan a la vista cuando aparecen. Esta revisión no instaló la extensión ni comprobó permisos o CORS de un navegador real.
 
 ## Trabajo previo revisado
 

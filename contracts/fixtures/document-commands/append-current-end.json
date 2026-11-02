@@ -1,0 +1,57 @@
+{
+  "input": {
+    "schema_version": 2,
+    "blocks": [
+      {
+        "id": "a",
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "A"
+          }
+        ]
+      }
+    ]
+  },
+  "commands": [
+    {
+      "type": "append",
+      "node": {
+        "id": "b",
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "B"
+          }
+        ]
+      }
+    }
+  ],
+  "expected": {
+    "schema_version": 2,
+    "blocks": [
+      {
+        "id": "a",
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "A"
+          }
+        ]
+      },
+      {
+        "id": "b",
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "B"
+          }
+        ]
+      }
+    ]
+  }
+}

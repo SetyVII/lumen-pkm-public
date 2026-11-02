@@ -16,11 +16,7 @@ fun nativeColumns(count: Int = 2): JSONObject = nativeParagraph().put("type", "c
 
 fun replaceNativeBlock(blocks: JSONArray, index: Int, replacement: JSONObject): JSONArray = JSONArray(blocks.toString()).put(index, replacement)
 
-fun LumenObject.withNativeBlocks(blocks: JSONArray): LumenObject {
-    val props = JSONObject(properties.toString()).put("blocks", JSONArray(blocks.toString())).put("rich_text", JSONObject.NULL)
-    return copy(content = nativeDocumentText(blocks), properties = props,
-        links = ((links - nativeReferenceIds(properties.optJSONArray("blocks"))) + nativeReferenceIds(blocks)).distinct())
-}
+fun LumenObject.withNativeBlocks(blocks: JSONArray): LumenObject = withDocument(document.withBlocks(blocks))
 
 /** Only touch the selected cell; keep every other cell/run and extension key. */
 fun editTableCell(table: JSONObject, row: Int, column: Int, text: String): JSONObject {

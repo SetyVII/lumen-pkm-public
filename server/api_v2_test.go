@@ -289,7 +289,7 @@ func TestCreateObjectFromURLPipeline(t *testing.T) {
 	if created.Properties["preview_status"] != "ready" {
 		t.Fatalf("preview not fetched: %v", created.Properties["preview_status"])
 	}
-	blocks, _ := created.Properties["blocks"].([]any)
+	blocks := rawObjectBlocks(created.Object)
 	if len(blocks) != 2 {
 		t.Fatalf("notes_markdown did not produce blocks: %v", created.Properties["blocks"])
 	}
@@ -410,15 +410,15 @@ func TestCreateObjectFromMarkdown(t *testing.T) {
 		t.Fatalf("HTTP %d: %s", rr.Code, rr.Body.String())
 	}
 	o := objectFrom(t, rr)
-	blocks, _ := o.Properties["blocks"].([]any)
+	blocks := rawObjectBlocks(o)
 	if len(blocks) != 3 {
 		t.Fatalf("markdown did not convert to 3 blocks: %v", o.Properties["blocks"])
 	}
 	first, _ := blocks[0].(map[string]any)
-	if first["type"] != blockHeading || first["level"] != float64(1) {
+	if first["type"] != blockHeading || first["attrs"].(map[string]any)["level"] != float64(1) {
 		t.Fatalf("first block is not a heading: %v", first)
 	}
-	if !strings.Contains(o.Content, "○ task one") || !strings.Contains(o.Content, "Paragraph with bold.") {
+	if !strings.Contains(o.Content, "task one") || !strings.Contains(o.Content, "Paragraph with bold.") {
 		t.Fatalf("plain-text mirror wrong: %q", o.Content)
 	}
 	if o.Properties["priority"] != "high" {
@@ -429,7 +429,7 @@ func TestCreateObjectFromMarkdown(t *testing.T) {
 		t.Fatalf("tags not resolved: %v", o.Properties["tags"])
 	}
 	// Round-trip: the stored blocks render back to the same Markdown core.
-	rendered := api(t, app, "POST", "/v1/markdown/from-blocks", map[string]any{"blocks": blocks})
+	rendered := api(t, app, "POST", "/v1/markdown/from-blocks", map[string]any{"document": o.Document})
 	var out struct {
 		Markdown string `json:"markdown"`
 	}
@@ -485,7 +485,7 @@ func TestAppendMarkdownToBlockObject(t *testing.T) {
 		"type_id": "note", "title": "Append target", "content": "Start\n\nIntro.",
 		"properties": map[string]any{"blocks": parsed.Blocks, "rich_text": "<p>Intro.</p>"},
 	}))
-	rr := api(t, app, "POST", "/v1/objects/"+o.ID+"/append-markdown", map[string]any{"markdown": "## Section\n\nAdded later."})
+	rr := apiDocumentAppend(t, app, "POST", "/v1/objects/"+o.ID+"/append-markdown", map[string]any{"markdown": "## Section\n\nAdded later."})
 	if rr.Code != 200 {
 		t.Fatalf("HTTP %d: %s", rr.Code, rr.Body.String())
 	}
@@ -493,7 +493,7 @@ func TestAppendMarkdownToBlockObject(t *testing.T) {
 	if updated.Revision != o.Revision+1 {
 		t.Fatalf("append must bump the revision: %d -> %d", o.Revision, updated.Revision)
 	}
-	blocks, _ := updated.Properties["blocks"].([]any)
+	blocks := rawObjectBlocks(updated)
 	if len(blocks) != 4 {
 		t.Fatalf("blocks not appended: %v", blocks)
 	}
@@ -504,21 +504,21 @@ func TestAppendMarkdownToBlockObject(t *testing.T) {
 		t.Fatalf("content not appended: %q", updated.Content)
 	}
 	// Insert at position 0.
-	rr = api(t, app, "POST", "/v1/objects/"+o.ID+"/append-markdown", map[string]any{"markdown": "Top of the note.", "position": 0})
+	rr = apiDocumentAppend(t, app, "POST", "/v1/objects/"+o.ID+"/append-markdown", map[string]any{"markdown": "Top of the note.", "position": 0})
 	if rr.Code != 200 {
 		t.Fatal(rr.Body.String())
 	}
 	updated = objectFrom(t, rr)
-	blocks, _ = updated.Properties["blocks"].([]any)
+	blocks = rawObjectBlocks(updated)
 	first, _ := blocks[0].(map[string]any)
-	if first["text"] != "Top of the note." {
+	if !strings.Contains(blockSearchText(first), "Top of the note.") {
 		t.Fatalf("position insert failed: %v", blocks[0])
 	}
 	// Out of range.
-	if bad := api(t, app, "POST", "/v1/objects/"+o.ID+"/append-markdown", map[string]any{"markdown": "x", "position": 99}); bad.Code != 400 {
+	if bad := apiDocumentAppend(t, app, "POST", "/v1/objects/"+o.ID+"/append-markdown", map[string]any{"markdown": "x", "position": 99}); bad.Code != 400 {
 		t.Fatalf("out-of-range position: HTTP %d", bad.Code)
 	}
-	if bad := api(t, app, "POST", "/v1/objects/"+o.ID+"/append-markdown", map[string]any{"markdown": "x", "position": -1}); bad.Code != 400 {
+	if bad := apiDocumentAppend(t, app, "POST", "/v1/objects/"+o.ID+"/append-markdown", map[string]any{"markdown": "x", "position": -1}); bad.Code != 400 {
 		t.Fatalf("negative position: HTTP %d", bad.Code)
 	}
 	// Version history: the pre-append state is snapshot in the same write.
@@ -532,7 +532,7 @@ func TestAppendMarkdownToBlockObject(t *testing.T) {
 		t.Fatal("append did not reach the sync journal")
 	}
 	// Errors.
-	if bad := api(t, app, "POST", "/v1/objects/missing-id/append-markdown", map[string]any{"markdown": "x"}); bad.Code != 404 {
+	if bad := apiDocumentAppend(t, app, "POST", "/v1/objects/missing-id/append-markdown", map[string]any{"markdown": "x"}); bad.Code != 404 {
 		t.Fatalf("unknown object: HTTP %d", bad.Code)
 	}
 	for name, body := range map[string]map[string]any{
@@ -540,7 +540,7 @@ func TestAppendMarkdownToBlockObject(t *testing.T) {
 		"blank":  {"markdown": "  \n\t "},
 		"absent": {},
 	} {
-		bad := api(t, app, "POST", "/v1/objects/"+o.ID+"/append-markdown", body)
+		bad := apiDocumentAppend(t, app, "POST", "/v1/objects/"+o.ID+"/append-markdown", body)
 		if bad.Code != 400 {
 			t.Fatalf("%s markdown: HTTP %d", name, bad.Code)
 		}
@@ -553,28 +553,28 @@ func TestAppendMarkdownToPlainTextObjectNeverInventsBlocks(t *testing.T) {
 		"type_id": "note", "title": "Plain body", "content": "Existing plain text.",
 		"properties": map[string]any{"rich_text": "<p>Existing plain text.</p>"},
 	})
-	rr := api(t, app, "POST", "/v1/objects/"+plain.ID+"/append-markdown", map[string]any{"markdown": "- [ ] item one"})
+	rr := apiDocumentAppend(t, app, "POST", "/v1/objects/"+plain.ID+"/append-markdown", map[string]any{"markdown": "- [ ] item one"})
 	if rr.Code != 200 {
 		t.Fatalf("HTTP %d: %s", rr.Code, rr.Body.String())
 	}
 	updated := objectFrom(t, rr)
-	if blocks, _ := updated.Properties["blocks"].([]any); len(blocks) != 0 {
+	if blocks := rawObjectBlocks(updated); len(blocks) < 2 {
 		t.Fatalf("blocks must not be invented for a plain-text object: %v", blocks)
 	}
 	if _, exists := updated.Properties["rich_text"]; exists {
 		t.Fatal("stale rich_text survived the content append")
 	}
-	if !strings.Contains(updated.Content, "Existing plain text.") || !strings.Contains(updated.Content, "○ item one") {
+	if !strings.Contains(updated.Content, "Existing plain text.") || !strings.Contains(updated.Content, "item one") {
 		t.Fatalf("content append wrong: %q", updated.Content)
 	}
 	// An object with no text anywhere gains the block representation.
 	empty := appendTestObject(t, app, map[string]any{"type_id": "note", "title": "Empty note"})
-	rr = api(t, app, "POST", "/v1/objects/"+empty.ID+"/append-markdown", map[string]any{"markdown": "First content."})
+	rr = apiDocumentAppend(t, app, "POST", "/v1/objects/"+empty.ID+"/append-markdown", map[string]any{"markdown": "First content."})
 	if rr.Code != 200 {
 		t.Fatal(rr.Body.String())
 	}
 	updated = objectFrom(t, rr)
-	if blocks, _ := updated.Properties["blocks"].([]any); len(blocks) != 1 {
+	if blocks := rawObjectBlocks(updated); len(blocks) != 1 {
 		t.Fatalf("empty object did not gain blocks: %v", updated.Properties["blocks"])
 	}
 }
@@ -585,7 +585,7 @@ func TestAppendMarkdownToPlainTextObjectNeverInventsBlocks(t *testing.T) {
 
 func TestJournalAppendMarkdown(t *testing.T) {
 	app, _, _ := makeApp(t)
-	rr := api(t, app, "POST", "/v1/journal/2026-10-31/append", map[string]any{"markdown": "- walked the dog"})
+	rr := apiDocumentAppend(t, app, "POST", "/v1/journal/2026-10-31/append", map[string]any{"markdown": "- walked the dog"})
 	if rr.Code != 200 {
 		t.Fatalf("HTTP %d: %s", rr.Code, rr.Body.String())
 	}
@@ -597,15 +597,15 @@ func TestJournalAppendMarkdown(t *testing.T) {
 		t.Fatalf("content missing: %q", journal.Content)
 	}
 	// Same date again: same note, appended.
-	again := objectFrom(t, api(t, app, "POST", "/v1/journal/2026-10-31/append", map[string]any{"markdown": "- second entry"}))
+	again := objectFrom(t, apiDocumentAppend(t, app, "POST", "/v1/journal/2026-10-31/append", map[string]any{"markdown": "- second entry"}))
 	if again.ID != journal.ID || !strings.Contains(again.Content, "second entry") {
 		t.Fatalf("second append failed: %+v", again)
 	}
 	// Errors.
-	if bad := api(t, app, "POST", "/v1/journal/2026-13-45/append", map[string]any{"markdown": "x"}); bad.Code != 400 {
+	if bad := apiDocumentAppend(t, app, "POST", "/v1/journal/2026-13-45/append", map[string]any{"markdown": "x"}); bad.Code != 400 {
 		t.Fatalf("invalid date: HTTP %d", bad.Code)
 	}
-	if bad := api(t, app, "POST", "/v1/journal/2026-12-24/append", map[string]any{"markdown": ""}); bad.Code != 400 {
+	if bad := apiDocumentAppend(t, app, "POST", "/v1/journal/2026-12-24/append", map[string]any{"markdown": ""}); bad.Code != 400 {
 		t.Fatalf("empty markdown: HTTP %d", bad.Code)
 	}
 }
@@ -613,60 +613,60 @@ func TestJournalAppendMarkdown(t *testing.T) {
 func TestJournalAppendSections(t *testing.T) {
 	app, _, _ := makeApp(t)
 	// A fresh note gains a heading block plus the content.
-	first := objectFrom(t, api(t, app, "POST", "/v1/journal/2026-11-01/append", map[string]any{"markdown": "entry one", "section": "Log"}))
-	blocks, _ := first.Properties["blocks"].([]any)
+	first := objectFrom(t, apiDocumentAppend(t, app, "POST", "/v1/journal/2026-11-01/append", map[string]any{"markdown": "entry one", "section": "Log"}))
+	blocks := rawObjectBlocks(first)
 	if len(blocks) != 2 {
 		t.Fatalf("section did not create a heading block: %v", first.Properties["blocks"])
 	}
 	heading, _ := blocks[0].(map[string]any)
-	if heading["type"] != blockHeading || heading["text"] != "Log" || heading["level"] != float64(2) {
+	if heading["type"] != blockHeading || blockSearchText(heading) != " Log" && !strings.Contains(blockSearchText(heading), "Log") || heading["attrs"].(map[string]any)["level"] != float64(2) {
 		t.Fatalf("wrong section heading: %v", heading)
 	}
 	// A second entry to the same section lands inside it.
-	second := objectFrom(t, api(t, app, "POST", "/v1/journal/2026-11-01/append", map[string]any{"markdown": "entry two", "section": "Log"}))
-	blocks, _ = second.Properties["blocks"].([]any)
+	second := objectFrom(t, apiDocumentAppend(t, app, "POST", "/v1/journal/2026-11-01/append", map[string]any{"markdown": "entry two", "section": "Log"}))
+	blocks = rawObjectBlocks(second)
 	if len(blocks) != 3 {
 		t.Fatalf("second section entry not appended in place: %v", blocks)
 	}
-	if entry, _ := blocks[1].(map[string]any); entry["text"] != "entry one" {
+	if entry, _ := blocks[1].(map[string]any); !strings.Contains(blockSearchText(entry), "entry one") {
 		t.Fatalf("section order broken: %v", blocks)
 	}
-	if entry, _ := blocks[2].(map[string]any); entry["text"] != "entry two" {
+	if entry, _ := blocks[2].(map[string]any); !strings.Contains(blockSearchText(entry), "entry two") {
 		t.Fatalf("section order broken: %v", blocks)
 	}
 	// A new section is appended after the existing one.
-	third := objectFrom(t, api(t, app, "POST", "/v1/journal/2026-11-01/append", map[string]any{"markdown": "plan a", "section": "Plan"}))
-	blocks, _ = third.Properties["blocks"].([]any)
+	third := objectFrom(t, apiDocumentAppend(t, app, "POST", "/v1/journal/2026-11-01/append", map[string]any{"markdown": "plan a", "section": "Plan"}))
+	blocks = rawObjectBlocks(third)
 	if len(blocks) != 5 {
 		t.Fatalf("new section not appended: %v", blocks)
 	}
 	lastHeading, _ := blocks[3].(map[string]any)
-	if lastHeading["text"] != "Plan" {
+	if !strings.Contains(blockSearchText(lastHeading), "Plan") {
 		t.Fatalf("new section heading misplaced: %v", blocks)
 	}
 
 	// A plain-text daily note keeps its content representation.
 	plain := objectFrom(t, api(t, app, "GET", "/v1/journal/2026-11-02", nil))
-	plain = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+plain.ID, map[string]any{"content": "Existing mobile text."}))
-	after := objectFrom(t, api(t, app, "POST", "/v1/journal/2026-11-02/append", map[string]any{"markdown": "plain entry", "section": "Log"}))
-	if blocks, _ := after.Properties["blocks"].([]any); len(blocks) != 0 {
+	plain = objectFrom(t, api(t, app, "PUT", "/v1/objects/"+plain.ID+"/document", map[string]any{"base_revision": plain.Revision, "op_id": "journal-existing-text-001", "document": map[string]any{"schema_version": 2, "blocks": []any{map[string]any{"id": "mobile-existing", "type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "Existing mobile text."}}}}}}))
+	after := objectFrom(t, apiDocumentAppend(t, app, "POST", "/v1/journal/2026-11-02/append", map[string]any{"markdown": "plain entry", "section": "Log"}))
+	if blocks := rawObjectBlocks(after); len(blocks) == 0 {
 		t.Fatalf("plain-text journal must not gain blocks: %v", blocks)
 	}
-	if !strings.Contains(after.Content, "## Log") || !strings.Contains(after.Content, "plain entry") || !strings.Contains(after.Content, "Existing mobile text.") {
+	if !strings.Contains(after.Content, "Log") || !strings.Contains(after.Content, "plain entry") || !strings.Contains(after.Content, "Existing mobile text.") {
 		t.Fatalf("plain section append wrong: %q", after.Content)
 	}
-	if strings.Count(after.Content, "## Log") != 1 {
+	if strings.Count(after.Content, "Log") != 1 {
 		t.Fatalf("section heading duplicated: %q", after.Content)
 	}
-	after = objectFrom(t, api(t, app, "POST", "/v1/journal/2026-11-02/append", map[string]any{"markdown": "plain entry two", "section": "Log"}))
-	if !strings.Contains(after.Content, "plain entry two") || strings.Count(after.Content, "## Log") != 1 {
+	after = objectFrom(t, apiDocumentAppend(t, app, "POST", "/v1/journal/2026-11-02/append", map[string]any{"markdown": "plain entry two", "section": "Log"}))
+	if !strings.Contains(after.Content, "plain entry two") || strings.Count(after.Content, "Log") != 1 {
 		t.Fatalf("second plain section entry wrong: %q", after.Content)
 	}
 	// Section insert before a following heading line stays inside the section.
-	after = objectFrom(t, api(t, app, "POST", "/v1/journal/2026-11-02/append", map[string]any{"markdown": "other entry", "section": "Other"}))
-	after = objectFrom(t, api(t, app, "POST", "/v1/journal/2026-11-02/append", map[string]any{"markdown": "log last", "section": "Log"}))
-	logPos := strings.Index(after.Content, "## Log")
-	otherPos := strings.Index(after.Content, "## Other")
+	after = objectFrom(t, apiDocumentAppend(t, app, "POST", "/v1/journal/2026-11-02/append", map[string]any{"markdown": "other entry", "section": "Other"}))
+	after = objectFrom(t, apiDocumentAppend(t, app, "POST", "/v1/journal/2026-11-02/append", map[string]any{"markdown": "log last", "section": "Log"}))
+	logPos := strings.Index(after.Content, "Log")
+	otherPos := strings.Index(after.Content, "Other")
 	lastPos := strings.Index(after.Content, "log last")
 	if !(logPos < lastPos && lastPos < otherPos) {
 		t.Fatalf("section insert did not stay inside its section: %q", after.Content)

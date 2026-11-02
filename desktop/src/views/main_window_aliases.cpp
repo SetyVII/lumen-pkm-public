@@ -2,27 +2,8 @@
 
 #include "lumen_aliases.hpp"
 
-// Desktop stage "aliases-ui" (D6): Capacities aliases
-// (https://docs.capacities.io/reference/properties#aliases) surfaced over
-// the backend contract (docs/implementation/backend/aliases.md,
-// contracts/SYNC.md "Aliases"). `properties.aliases` is a default property
-// of every object; this stage adds the per-object alias editor (the "…"
-// Customize menu, next to the cover and description actions), the
-// read-only aliases display on the object page, and the search surfaces
-// (command palette + editor @-linking dropdown + LumenQuery view search)
-// matching aliases — with the Capacities insertion rule: picking a result
-// that matched through an alias inserts THE ALIAS as the link text while
-// the link keeps pointing at the object id.
-//
-// The search surfaces live where they already existed: the palette now
-// calls GET /v1/search (the server matcher with matched_alias) when a
-// query is typed (main_window_ui.cpp), the @-dropdown extends its title
-// filter (lumen_editor.cpp), and LumenQuery::evaluate (lumen_views.cpp)
-// gains the same alias clause. This file owns the alias editor dialog and
-// its properties PATCH.
 
 namespace {
-// Capacities pattern: Backspace on the empty input removes the last chip.
 class AliasInputFilter : public QObject {
   public:
     explicit AliasInputFilter(QObject *parent) : QObject(parent) {}
@@ -174,7 +155,7 @@ void MainWindow::showAliasEditor(const QString &objectId,
     else
         properties["aliases"] = LumenAliases::toJson(aliases);
     saveLabel->setText("Saving aliases…");
-    api.patch("/v1/objects/" + objectId, QJsonObject{{"properties", properties}},
+    api.patch("/v1/objects/" + objectId, QJsonObject{{"properties", properties}, {"base_revision", source.value("revision")}},
               [this, objectId, previewSession, aliases](QJsonValue value, QString err) {
                   if (!err.isEmpty()) {
                       error("Could not save aliases: " + err);

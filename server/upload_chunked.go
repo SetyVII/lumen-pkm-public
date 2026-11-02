@@ -13,24 +13,6 @@ import (
 	"time"
 )
 
-// Chunked asset upload (backend stage api-v2), the Capacities
-// media-upload equivalent for files above the 50 MB limit of POST /v1/assets.
-//
-// Lifecycle: init -> part (1-based, sequential, 5..25 MB each; only the last
-// part may be smaller) -> complete -> Asset. abort (or a 24 h TTL janitor that
-// runs on every upload request) removes the staging directory.
-//
-// Staging lives OUTSIDE the encrypted store, in a temp directory
-// (LUMEN_UPLOAD_DIR, default os.TempDir()/lumen-uploads): parts are not
-// committed assets, they must never bloat the database or the sync journal,
-// and an interrupted upload has to be trivially cleanable. Nothing in the
-// staging dir is plaintext: each part is sealed with the store key as it
-// arrives (AAD "asset/<asset-id>", the same AAD the final blob row uses) and
-// the session metadata file is sealed too (AAD "upload/<id>").
-//
-// complete reads the sealed part files and commits them as blob_chunks rows
-// together with the asset record, the media object and the owner update, in
-// one transaction. Peak RAM stays at roughly one part, not the whole file.
 
 const (
 	chunkedUploadMaxSize = 500 << 20

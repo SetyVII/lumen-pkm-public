@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lumen.local/contracts/catalog.schema.json",
+  "title": "Lumen read-only catalog projection v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "projection",
+    "entries",
+    "next_cursor",
+    "has_more"
+  ],
+  "properties": {
+    "projection": {
+      "const": "catalog/v1"
+    },
+    "entries": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "type_id",
+          "title",
+          "created_at",
+          "updated_at",
+          "revision"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "incarnation": {
+            "type": "string"
+          },
+          "excerpt": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "is_template": {
+            "type": "boolean"
+          },
+          "properties": {
+            "type": "object"
+          },
+          "omitted_properties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "excerpt_truncated": {
+            "type": "boolean"
+          },
+          "related_ids": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "string"
+            }
+          },
+          "relations_truncated": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "requested_properties": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string"
+      }
+    },
+    "next_cursor": {
+      "type": "string"
+    },
+    "has_more": {
+      "type": "boolean"
+    }
+  }
+}

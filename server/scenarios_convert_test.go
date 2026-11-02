@@ -28,7 +28,7 @@ func TestScenarioConvertTypeJourney(t *testing.T) {
 	})
 
 	article := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": sourceType.ID, "title": "The Left Hand of Darkness", "content": "Reading notes",
+		"type_id": sourceType.ID, "title": "The Left Hand of Darkness", "document": documentFixture("Reading notes"),
 		"properties": map[string]any{
 			"author_name":    "Ursula K. Le Guin",
 			"published_on":   "1969-03-01",
@@ -38,7 +38,7 @@ func TestScenarioConvertTypeJourney(t *testing.T) {
 		},
 	}))
 	note := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "note", "title": "Converted link", "content": "See the article",
+		"type_id": "note", "title": "Converted link", "document": documentFixture("See the article"),
 		"links": []string{article.ID},
 	}))
 	articleCollection := createCollection(t, app, "Articles to read", sourceType.ID, []string{article.ID})

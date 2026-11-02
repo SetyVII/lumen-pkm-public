@@ -305,24 +305,7 @@ fun JournalScreen(
         }
 
         if (selectedTopTab == 0) {
-            EditorKeyboardBar(
-                vm = vm,
-                onInsertText = { snippet ->
-                    editorValue = insertSnippet(editorValue, snippet)
-                    val j = vm.ensureJournal(date)
-                    vm.updateContent(j.id, editorValue.text)
-                },
-                onIndent = {
-                    editorValue = indentLine(editorValue)
-                    val j = vm.ensureJournal(date)
-                    vm.updateContent(j.id, editorValue.text)
-                },
-                onOutdent = {
-                    editorValue = outdentLine(editorValue)
-                    val j = vm.ensureJournal(date)
-                    vm.updateContent(j.id, editorValue.text)
-                },
-            )
+            // Canonical block controls are owned by CanonicalDocumentEditor.
         }
     }
 }

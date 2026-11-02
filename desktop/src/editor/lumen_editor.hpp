@@ -22,6 +22,8 @@ class RichEditor : public QTextEdit {
     using ReferenceCompletion = std::function<void(QJsonObject)>;
     std::function<void()> linkRequested, slashRequested;
     std::function<void(QString)> openReference;
+    std::function<void(QString, std::function<void(QJsonArray)>)> blockSearchRequested;
+    std::function<void(QString, QString, ReferenceCompletion)> blockResolveRequested;
     std::function<void(QString, QString, ReferenceCompletion)> referenceCreateRequested;
     std::function<void(QString, ReferenceCompletion)> webEmbedRequested;
     std::function<void(QString)> referenceInserted;
@@ -36,21 +38,23 @@ class RichEditor : public QTextEdit {
     void setHtml(const QString &text);
     void clear();
     void setRecentIds(const QStringList &ids);
+    void setDocumentObjectId(const QString &identity) { documentObjectId_ = identity; }
+    QString documentObjectId() const { return documentObjectId_; }
     void setReferenceData(const QJsonArray &objects, const QJsonArray &types);
     void setAppearance(bool dark, bool reducedMotion = false);
     void showReferencePicker(bool asBlock = false);
+    void showBlockReferencePicker();
+    void insertBlockReference(const QJsonObject &hit, bool asBlock = false);
     void showBlockMenu();
     void showBlockActionMenu(const QTextBlock &block, const QPoint &globalPos);
     void convertBlockToObject(const QTextBlock &block, const QString &typeId);
     void duplicateBlock(const QTextBlock &block);
     void deleteBlock(const QTextBlock &block);
-    // Capacities handle-menu parity: group the selected blocks (Ctrl/Cmd+G)
-    // into one group box, or the cursor block when nothing is selected.
     void groupSelection();
     // Removes the group box around `block` (or unwraps a legacy group block).
     void ungroupBlock(const QTextBlock &block);
     bool blockInGroup(const QTextBlock &block) const;
-    // Copies "lumen://block/<block-id>" to the clipboard (block reference).
+    // Copies a compound lumen://block/<id>?object_id=<owner> reference.
     void copyBlockReference(const QTextBlock &block);
     // Per-block style colors; an empty string clears that color.
     void setBlockStyleColors(const QTextBlock &block, const QString &textColor, const QString &backgroundColor);
@@ -58,6 +62,8 @@ class RichEditor : public QTextEdit {
     void moveBlockDown(const QTextBlock &block);
     void indentBlock(const QTextBlock &block);
     void outdentBlock(const QTextBlock &block);
+    void insertTemporalReference(const QJsonObject &attributes);
+    void showTemporalPicker(bool withTime = false, const QTextCursor &existing = QTextCursor());
     void insertObjectReference(const QJsonObject &object);
     void insertObjectReferenceBlock(const QJsonObject &object);
     // Etiquetas mencionadas en el documento: id del objeto y bloque que
@@ -69,11 +75,6 @@ class RichEditor : public QTextEdit {
     QList<TagMention> tagMentions() const;
     void insertImageBlock(const QString &objectId, const QPixmap &pixmap, const QString &title = {});
     bool focusBlock(const QString &id);
-    // Find-in-page over the open object (Capacities parity). The bar is a
-    // floating overlay owned by the editor; the engine scans this editor's
-    // single QTextDocument, so paragraphs, toggles, tables, code blocks and
-    // reference chips are all in scope. Scope is this object only: there is
-    // no cross-object replace.
     void showFindBar(bool showReplace = false);
     void closeFindBar();
     bool findBarVisible() const;
@@ -102,6 +103,11 @@ class RichEditor : public QTextEdit {
     // Persists the find session across editors (MainWindow).
     std::function<void()> findStateChanged;
     QJsonArray documentReferenceIds() const;
+    bool selectCanonicalBlock(const QString &id);
+    bool pasteCanonicalDocument(const QJsonObject &document, QString *error = nullptr);
+    bool applyCanonicalCommands(const QJsonArray &commands, QString *error = nullptr);
+    QJsonObject canonicalDocument() const;
+    void setCanonicalDocument(const QJsonObject &document);
     QJsonArray structuredBlocks() const;
     void setStructuredBlocks(const QJsonArray &blocks);
     void insertDivider();
@@ -120,11 +126,14 @@ class RichEditor : public QTextEdit {
     // Id de bloque (BlockIdProperty); vacío si no lo tiene.
     static QString blockId(const QTextBlock &block);
   protected:
+    QMimeData *createMimeDataFromSelection() const override;
     bool canInsertFromMimeData(const QMimeData *source) const override;
     void insertFromMimeData(const QMimeData *source) override;
     void keyPressEvent(QKeyEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
+    void contextMenuEvent(QContextMenuEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     void focusOutEvent(QFocusEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
@@ -146,11 +155,22 @@ class RichEditor : public QTextEdit {
     QTextBlock blockAtViewportPoint(const QPoint &point) const;
   private:
     QJsonArray objects_, types_;
+    QString documentObjectId_;
+    bool pasteStructuredMime(const QMimeData *source);
+    bool pasteNormalizedHtml(const QString &html);
+    void pastePlainText(QString text);
+    bool loadedCanonicalEmpty_ = false;
+    QPointer<QTextTable> resizingTable_;
+    int resizingColumn_ = -1;
+    qreal resizingStartX_ = 0, resizingStartWidth_ = 0;
+    QTextCursor resizeTransaction_;
+    int tableResizeColumnAt(const QPoint &point, QTextTable **table = nullptr) const;
     QStringList recentIds_;
     bool referenceBlock_ = false;
     bool referenceDataSet_ = false, dark_ = false, reducedMotion_ = false, normalizing_ = false;
-    QPointer<QFrame> referencePopup_, blockPopup_, selectionToolbar_, linkPopup_, mathPopup_, codeBar_;
+    QPointer<QFrame> referencePopup_, blockPopup_, selectionToolbar_, linkPopup_, mathPopup_, codeBar_, imageBar_;
     QPointer<QToolButton> blockHandle_;
+    QPointer<QWidget> imageLeftHandle_, imageRightHandle_;
     QTextBlock activeHandleBlock_;
     QTextBlock draggedBlock_;
     QTextBlock dropTargetBlock_;
@@ -184,9 +204,6 @@ class RichEditor : public QTextEdit {
     QFrame *makeInlinePanel(const QString &accessibleName, const QString &kind, bool heading);
     void insertReferenceIcon(QTextCursor &cursor, const QTextCharFormat &format, const QString &type);
     void selectReference();
-    // D6 (aliases): linkText is the Capacities matched-alias rule — when a
-    // search result matched through an alias, the chip's display text is
-    // the alias while the anchor href keeps the object id.
     void insertReferenceAt(QTextCursor cursor, const QJsonObject &object, const QString &linkText = {});
     void insertReferenceBlockAt(QTextCursor cursor, const QJsonObject &object, const QString &linkText = {});
     void updateSelectionToolbar();
@@ -200,6 +217,7 @@ class RichEditor : public QTextEdit {
     void insertMathBlock();
     void refreshMath();
     void updateCodeBar();
+    void updateImageBar();
     bool handleReferenceDeletion(QKeyEvent *event);
     bool handleReferenceNavigation(QKeyEvent *event);
     bool handleMarkdownPrefix(QKeyEvent *event);
@@ -226,9 +244,6 @@ class RichEditor : public QTextEdit {
     QTextBlock findBlockById(const QString &id) const;
     void refreshDividerRule();
     qreal dividerRuleWidth_ = 0;
-    // Find-in-page engine and bar (Capacities parity). Matches are computed
-    // against the same QTextDocument the editor renders; reference-chip spans
-    // are flagged read-only so replace never rewrites a link title.
     struct FindMatch {
         int start = 0;
         int end = 0;

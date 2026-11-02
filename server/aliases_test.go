@@ -74,9 +74,9 @@ func TestAliasesAreStoredNormalizedAndReturned(t *testing.T) {
 	}
 	// Resending the same aliases is a no-op and must not bump the revision.
 	revision := created.Revision
-	same := objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+created.ID, map[string]any{
-		"title": created.Title, "content": created.Content, "properties": created.Properties, "links": created.Links,
-	}))
+	same := objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+created.ID, documentPatchPayload(t, app, created.ID, map[string]any{
+		"title": created.Title, "document": created.Document, "properties": created.Properties, "links": created.Links,
+	})))
 	if same.Revision != revision {
 		t.Fatalf("no-op alias patch bumped revision %d -> %d", revision, same.Revision)
 	}
@@ -186,7 +186,7 @@ func TestAliasValidationRejectsInvalidValues(t *testing.T) {
 func TestSearchMatchesAliasesAndReportsThem(t *testing.T) {
 	app, _, _ := makeApp(t)
 	book := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "note", "title": "HP1", "content": "Wizard school",
+		"type_id": "note", "title": "HP1", "document": documentFixture("Wizard school"),
 		"properties": map[string]any{"aliases": []any{"Harry Potter", "The Stone"}},
 	}))
 	objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Unrelated"}))
@@ -263,27 +263,42 @@ func TestAliasRemovalRemovesItFromSearchAndSurvivesRestart(t *testing.T) {
 	}
 }
 
-func TestSyncPushUnionsAliasesAndNormalizesThem(t *testing.T) {
+func TestSyncPushRejectsStaleAliasesAndAcceptsExplicitRebasedUnion(t *testing.T) {
 	app, _, _ := makeApp(t)
 	o := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
 		"type_id": "note", "title": "Shared aliases",
 		"properties": map[string]any{"aliases": []any{"Server Name"}},
 	}))
-	o = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, map[string]any{"content": "server text"}))
-	push := decodeBody[syncPushResponse](t, api(t, app, "POST", "/v1/sync/push", map[string]any{
+	o = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, documentPatchPayload(t, app, o.ID, map[string]any{"document": documentFixture("server text")})))
+	request := map[string]any{
 		"device_id": "pixel-test", "base_seq": 0,
 		"operations": []any{map[string]any{
 			"op_id": "op-alias-0001", "action": "put", "base_revision": o.Revision - 1,
 			"object": map[string]any{
-				"id": o.ID, "type_id": "note", "title": o.Title, "content": "",
+				"id": o.ID, "type_id": "note", "title": o.Title, "document": o.Document,
 				"properties": map[string]any{"aliases": []any{"server name", "Mobile Name"}},
 				"links":      []string{}, "created_at": o.CreatedAt, "updated_at": o.UpdatedAt,
 			},
 		}},
-	}))
-	if len(push.Errors) != 0 || len(push.Conflicts) != 1 || push.Conflicts[0].Resolution != "server_kept_mobile_appended" {
-		t.Fatalf("unexpected sync result: %+v", push)
 	}
+	push := decodeBody[syncPushResponse](t, api(t, app, "POST", "/v1/sync/push", request))
+	if len(push.Errors) != 1 || !strings.HasPrefix(push.Errors[0].Error, "document_conflict") || len(push.Applied) != 0 {
+		t.Fatalf("stale rich snapshot was not rejected: %+v", push)
+	}
+	current := objectFrom(t, api(t, app, "GET", "/v1/objects/"+o.ID, nil))
+	if current.Revision != o.Revision || !sameStrings(aliasesOf(t, current), []string{"Server Name"}) || current.Content != "server text" {
+		t.Fatalf("stale aliases changed committed state: %+v", current)
+	}
+	// The client fetches the latest document and explicitly chooses the union.
+	operation := request["operations"].([]any)[0].(map[string]any)
+	operation["base_revision"] = current.Revision
+	operation["op_id"] = "op-alias-rebased"
+	operation["object"].(map[string]any)["properties"] = map[string]any{"aliases": []any{" Server Name ", "Server Name", " Mobile Name "}}
+	push = decodeBody[syncPushResponse](t, api(t, app, "POST", "/v1/sync/push", request))
+	if len(push.Errors) != 0 || len(push.Applied) != 1 {
+		t.Fatalf("rebased aliases failed: %+v", push)
+	}
+
 	merged := objectFrom(t, api(t, app, "GET", "/v1/objects/"+o.ID, nil))
 	if got, want := aliasesOf(t, merged), []string{"Server Name", "Mobile Name"}; !sameStrings(got, want) {
 		t.Fatalf("merged aliases = %v, want %v", got, want)

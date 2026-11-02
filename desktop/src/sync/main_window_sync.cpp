@@ -241,7 +241,7 @@ void MainWindow::pollWorkspace() {
                 current["sync_error"] = remote.value("sync_error");
                 if (!dirty && !saving && !navigationPending &&
                     remote.value("revision").toInteger() >= current.value("revision").toInteger()) {
-                    const bool bodyChanged = current.value("content") != remote.value("content") ||
+                    const bool bodyChanged = current.value("document") != remote.value("document") ||
                         current.value("properties") != remote.value("properties") ||
                         current.value("title") != remote.value("title") ||
                         current.value("links") != remote.value("links");
@@ -301,6 +301,29 @@ void MainWindow::pollWorkspace() {
             connection->setText("Servidor conectado · sesión privada");
         });
     }
+
+void MainWindow::ensureAssetImageLoaded(RichEditor *edit, const QString &assetId) {
+    if (!edit || assetId.isEmpty()) return;
+    const auto key = "asset/" + assetId; const QUrl resource("lumen://asset/" + assetId);
+    if (imageMemoryCache_.contains(key)) {
+        edit->document()->addResource(QTextDocument::ImageResource, resource, imageMemoryCache_.value(key));
+        edit->document()->markContentsDirty(0, edit->document()->characterCount()); edit->viewport()->update(); return;
+    }
+    const bool pending = assetImageWaiters_.contains(assetId);
+    auto &waiters = assetImageWaiters_[assetId];
+    if (!waiters.contains(QPointer<RichEditor>(edit))) waiters.append(QPointer<RichEditor>(edit));
+    if (pending) return;
+    api.bytes("/v1/assets/" + assetId + "/content", [this, assetId, key, resource](QByteArray bytes, QString error) {
+        const auto waiting = assetImageWaiters_.take(assetId); QPixmap image;
+        const bool valid = error.isEmpty() && image.loadFromData(bytes);
+        if (valid) imageMemoryCache_[key] = image;
+        for (const auto &target : waiting) if (target) {
+            if (!valid) continue;
+            target->document()->addResource(QTextDocument::ImageResource, resource, image);
+            target->document()->markContentsDirty(0, target->document()->characterCount()); target->viewport()->update();
+        }
+    });
+}
 
 void MainWindow::ensureImageLoaded(RichEditor *edit, const QString &objectId) {
         if (!edit || objectId.isEmpty()) return;
@@ -386,7 +409,8 @@ QJsonArray MainWindow::documentReferences() const {
     }
 
 void MainWindow::reconcileReferences() {
-        auto refs = documentReferences();
+        auto refs = current.value("links").toArray();
+        for (const auto &value : documentReferences()) if (!refs.contains(value)) refs.append(value);
         for (auto v : attachedAssetIds(current))
             if (!refs.contains(v))
                 refs.append(v);
@@ -449,6 +473,9 @@ void MainWindow::unlinkObject(const QString &id) {
                 newLinked.append(v);
         if (newLinked != linked || assetsChanged) {
             linked = newLinked;
+            QJsonArray manual;
+            for (const auto &value : current.value("links").toArray()) if (value.toString() != id) manual.append(value);
+            current["links"] = manual;
             renderLinkedObjects();
             markDirty();
             saveCurrent();
@@ -501,11 +528,10 @@ void MainWindow::saveCurrent(std::function<void()> after) {
         const auto id = str(current, "id");
         if (editor) {
             reconcileReferences();
-            const auto blocks=editor->structuredBlocks();
-            current["content"] = editor->exportText();
+            current["document"] = editor->canonicalDocument();
+            current.remove("content");
             auto p = current.value("properties").toObject();
-            p["rich_text"] = editor->toHtml();
-            p["blocks"] = blocks;
+            p.remove("rich_text"); p.remove("blocks");
             if (route == "journal") {
                 p.remove("image_asset_id");
                 auto assets = p.value("assets").toArray();
@@ -520,8 +546,9 @@ void MainWindow::saveCurrent(std::function<void()> after) {
         }
         if (title && route != "journal")
             current["title"] = title->text().trimmed();
-        current["links"] = linked;
+        // Explicit/manual links are kept separate from backend-derived document links.
         auto sent = current;
+        sent["op_id"] = QUuid::createUuid().toString(QUuid::WithoutBraces);
         if (sent.contains("revision"))
             sent["base_revision"] = sent.value("revision");
         dirty = false;
@@ -530,13 +557,8 @@ void MainWindow::saveCurrent(std::function<void()> after) {
         api.patchEx("/v1/objects/" + id, sent, [this, id, sent, after](int status, QJsonValue v, QString err) {
             saving = false;
             if (status == 409) {
-                const auto remote = v.toObject().value("current").toObject();
-                if (!remote.isEmpty() && str(current, "id") == id) {
-                    // Keep the local editor content and move the base revision
-                    // forward. The next explicit save is a deliberate decision,
-                    // not a silent overwrite of an unknown remote state.
-                    current["revision"] = remote.value("revision");
-                }
+                // Keep the original base revision. Explicit conflict resolution is
+                // required; a subsequent save cannot silently overwrite the server.
                 dirty = true;
                 error("Conflicto: el objeto cambió en otra ventana. Se conserva tu versión local; revisa antes de guardar de nuevo.");
                 pendingNavigation = {};
@@ -552,6 +574,7 @@ void MainWindow::saveCurrent(std::function<void()> after) {
             if (returned.isEmpty())
                 returned = sent;
             rememberObject(returned);
+            if (str(current, "id") == id && dirty) current["revision"] = returned.value("revision");
             if (str(current, "id") == id && !dirty) {
                 current = returned;
                 saveLabel->setText(saveState(current));

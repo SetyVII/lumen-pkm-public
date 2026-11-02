@@ -26,6 +26,7 @@ func uploadFixture(t *testing.T, app *App, ownerID, name string, data []byte) As
 	}
 	req := httptest.NewRequest("POST", "/v1/assets", body)
 	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set("X-Lumen-Document-Version", "2")
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	rr := httptest.NewRecorder()
 	app.Handler().ServeHTTP(rr, req)
@@ -41,7 +42,7 @@ func uploadFixture(t *testing.T, app *App, ownerID, name string, data []byte) As
 
 func TestLateAutosaveCannotOverwriteNewUploadMetadataOrMediaRelation(t *testing.T) {
 	app, _, _ := makeApp(t)
-	before := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "book", "title": "Upload while editing", "content": "Before", "properties": map[string]any{"author": "Before"}}))
+	before := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "book", "title": "Upload while editing", "document": documentFixture("Before"), "properties": map[string]any{"author": "Before"}}))
 	png, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j0ioAAAAASUVORK5CYII=")
 	if err != nil {
 		t.Fatal(err)
@@ -49,7 +50,19 @@ func TestLateAutosaveCannotOverwriteNewUploadMetadataOrMediaRelation(t *testing.
 	asset := uploadFixture(t, app, before.ID, "cover.png", png)
 	staleProperties := before.Properties
 	staleProperties["author"] = "New author from editor"
-	got := objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+before.ID, map[string]any{"content": "Fresh document text", "properties": staleProperties, "links": before.Links}))
+	stale := api(t, app, "PATCH", "/v1/objects/"+before.ID, documentPatchPayload(t, app, before.ID, map[string]any{
+		"base_revision": before.Revision, "document": documentFixture("Unrebased editor snapshot"), "properties": staleProperties, "links": before.Links,
+	}))
+	if stale.Code != 409 {
+		t.Fatalf("late pre-upload document was not rejected: %d %s", stale.Code, stale.Body.String())
+	}
+	committed := objectFrom(t, api(t, app, "GET", "/v1/objects/"+before.ID, nil))
+	if committed.Content != "Before" || committed.Properties["image_asset_id"] != asset.ID || len(committed.Links) != 1 {
+		t.Fatal("rejected stale snapshot mutated the committed body or attachment")
+	}
+	// After reading the latest revision, explicitly retry the local document;
+	// managed media metadata must survive even if the property snapshot is old.
+	got := objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+before.ID, documentPatchPayload(t, app, before.ID, map[string]any{"document": documentFixture("Fresh document text"), "properties": staleProperties, "links": before.Links})))
 	assets, _ := got.Properties["assets"].([]any)
 	if len(assets) != 1 || assets[0].(map[string]any)["id"] != asset.ID || got.Properties["image_asset_id"] != asset.ID || len(got.Links) != 1 || got.Links[0] != asset.MediaObjectID {
 		t.Fatal("late document snapshot removed committed attachment, cover or media relation")
@@ -94,7 +107,7 @@ func TestPromotionSurvivesStaleAutosaveAndDeletedMediaDoesNotReappear(t *testing
 	if err = json.Unmarshal(rr.Body.Bytes(), &promoted); err != nil {
 		t.Fatal(err)
 	}
-	got := objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+before.ID, map[string]any{"content": "Fresh body", "properties": before.Properties, "links": before.Links}))
+	got := objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+before.ID, documentPatchPayload(t, app, before.ID, map[string]any{"document": documentFixture("Fresh body"), "properties": before.Properties, "links": before.Links})))
 	assets, _ := got.Properties["assets"].([]any)
 	if len(assets) != 1 || assets[0].(map[string]any)["media_object_id"] != promoted.MediaObjectID || len(got.Links) != 1 || got.Links[0] != promoted.MediaObjectID {
 		t.Fatal("stale autosave removed promoted medium")
@@ -102,7 +115,7 @@ func TestPromotionSurvivesStaleAutosaveAndDeletedMediaDoesNotReappear(t *testing
 	if rr = api(t, app, "DELETE", "/v1/objects/"+promoted.MediaObjectID, nil); rr.Code != 200 {
 		t.Fatal(rr.Body.String())
 	}
-	got = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+before.ID, map[string]any{"content": "After explicit media delete", "properties": before.Properties, "links": []string{}}))
+	got = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+before.ID, documentPatchPayload(t, app, before.ID, map[string]any{"document": documentFixture("After explicit media delete"), "properties": before.Properties, "links": []string{}})))
 	if len(got.Links) != 0 {
 		t.Fatal("managed asset relation resurrected deleted media")
 	}
@@ -110,8 +123,8 @@ func TestPromotionSurvivesStaleAutosaveAndDeletedMediaDoesNotReappear(t *testing
 
 func TestUploadAfterAutosavePreservesLatestEditableProperties(t *testing.T) {
 	app, _, _ := makeApp(t)
-	before := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "book", "title": "Autosave before upload", "content": "Before"}))
-	objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+before.ID, map[string]any{"content": "Latest typed text", "properties": map[string]any{"author": "Latest author"}}))
+	before := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "book", "title": "Autosave before upload", "document": documentFixture("Before")}))
+	objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+before.ID, documentPatchPayload(t, app, before.ID, map[string]any{"document": documentFixture("Latest typed text"), "properties": map[string]any{"author": "Latest author"}})))
 	asset := uploadFixture(t, app, before.ID, "source.pdf", []byte("%PDF-1.4\nfixture\n"))
 	got := objectFrom(t, api(t, app, "GET", "/v1/objects/"+before.ID, nil))
 	if got.Content != "Latest typed text" || got.Properties["author"] != "Latest author" || len(got.Links) != 1 || got.Links[0] != asset.MediaObjectID {

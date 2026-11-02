@@ -1,0 +1,11 @@
+# The backend build needs only its source and the shared contracts. Never send
+# worktrees, personal files, builds or mobile toolchains as Docker context.
+**
+!server/
+!server/**
+!contracts/
+!contracts/**
+server/secrets/
+server/*.sqlite*
+server/*.test
+server/lumen-server

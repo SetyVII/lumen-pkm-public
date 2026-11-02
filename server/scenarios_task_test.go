@@ -19,7 +19,7 @@ func TestScenarioRecurringTaskJourney(t *testing.T) {
 
 	// Step 1: a weekly task on Mondays and Wednesdays, due Monday 2026-10-26.
 	task := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "task", "title": "Water plants", "content": "Use the blue can",
+		"type_id": "task", "title": "Water plants", "document": documentFixture("Use the blue can"),
 		"properties": map[string]any{
 			"status":     "todo",
 			"priority":   2,

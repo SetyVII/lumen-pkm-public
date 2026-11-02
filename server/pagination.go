@@ -8,21 +8,6 @@ import (
 	"strconv"
 )
 
-// Pagination for the list endpoints (backend stage api-v2, modeled on the
-// Capacities API's limit/cursor paging). The responses stay JSON arrays —
-// the contract forbids changing them — so the next page is advertised with
-// the X-Lumen-Next-Cursor response header, which is absent on the last page.
-//
-// Backward compatibility: a request with NEITHER limit NOR cursor keeps
-// today's behavior (the full list, no header). The default limit of 50 only
-// applies once a client opts into pagination by sending limit or cursor, so
-// an existing client can never silently lose objects it currently receives.
-//
-// The cursor is a keyset over the display order (updated_at descending, then
-// id ascending): it stays stable while objects are edited between pages
-// (a concurrently updated object may reappear or shift, which matches the
-// last-write-wins semantics of the API), and it never skips or repeats
-// objects that did not change.
 
 const (
 	defaultPageLimit = 50

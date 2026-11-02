@@ -5,6 +5,3 @@ or (at your option) any later version. No warranty is provided.
 Full license: https://www.gnu.org/licenses/agpl-3.0.txt
 
 Qt, Inter and any bundled third-party dependencies retain their own licenses.
-The official Logseq runtime is a separate component under its upstream license.
-Capacities is a reference for interaction and visual layout; no Capacities code,
-logo, proprietary font or brand asset is included in the application.

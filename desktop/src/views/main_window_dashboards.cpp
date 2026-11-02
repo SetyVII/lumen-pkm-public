@@ -4,23 +4,6 @@
 #include <QSettings>
 #include <QUrlQuery>
 
-// Desktop stage "type-dashboards" (D4): Capacities object dashboards
-// (<https://docs.capacities.io/reference/content-types#object-dashboards> and
-// <https://docs.capacities.io/reference/sections>). Opening a type from the
-// sidebar shows a section tab bar under the type header: "All" (the previous
-// type page), the built-in sections (Recent, Untagged, No backlinks,
-// Collections) and one tab per saved query of that type. Every tab is the SAME
-// LumenViews machinery over a different id set, so the six presentations,
-// search, filters and in-place edits keep working on each section.
-//
-// Data sources (the mapping is documented in
-// docs/implementation/desktop/type-dashboards.md):
-//   All          workspace cache (GET /v1/objects, unchanged);
-//   Recent       client-side recents of the type, newest first, capped at 20;
-//   Untagged     client-side (the API has no empty-tags filter today);
-//   No backlinks GET /v1/objects?type_id=<tid>&backlinked_count=0;
-//   Collections  the type's collection objects, cards opening the D2 page;
-//   query:<id>   the saved query's view spec, evaluated over the cache.
 
 namespace {
 // Display cap for the Recent section: the persisted recents snapshot and the
@@ -228,7 +211,6 @@ void MainWindow::fillTypeDashboard(QWidget *bar, QHBoxLayout *row, const QString
                             countText(dashboardSectionLabel(key),
                                       pending ? -1 : dashboardSectionCount(typeId, key)));
         connect(tab, &QToolButton::clicked, this, [this, typeId, key] { showTypeSection(typeId, key); });
-        // Capacities: "Remove" on a dashboard tab hides it for this type only.
         tab->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(tab, &QWidget::customContextMenuRequested, tab, [this, tab, typeId, key](const QPoint &pos) {
             QMenu menu(this);

@@ -1,37 +1,12 @@
 package main
 
-// MCP over HTTP for external AI agents (backend parity stage mcp-server).
-//
-// Capacities exposes an MCP server (docs.capacities.io/developer/
-// model-context-protocol) so AI tools can search, read and edit a user's
-// space. This stage gives Lumen the same capability on the official Go SDK
-// (github.com/modelcontextprotocol/go-sdk, MIT): a streamable HTTP endpoint
-// mounted at /mcp on the existing mux, behind the existing bearer token, with
-// thin tools over the internal functions of the earlier parity stages.
-//
-// Design rules:
-//
-//   - No business logic lives here. Every tool delegates to the function the
-//     REST endpoint uses (searchObjects' matcher, the api-v2 Markdown cores,
-//     the collections helper, the store), so MCP and REST cannot drift.
-//   - Auth deviates from Capacities' OAuth 2.1 + PKCE on purpose: Capacities
-//     is a multi-tenant SaaS mediating many users, apps and spaces, while
-//     Lumen is single-user and self-hosted with one deployment token. The
-//     endpoint reuses the bearer token middleware; scopes apply per tool
-//     (api:read for read tools, api:write for mutating tools, an unscoped
-//     token keeps full access), see scopes.go for the /mcp exemption.
-//   - The sync endpoints, token management and trash purge-all are never
-//     exposed as tools. Read tools exclude trashed objects and templates,
-//     exactly like the REST API.
-//   - A single tool call may create at most mcpMaxObjectsPerCall objects (the
-//     main object plus get-or-created tag objects), a simplified version of
-//     Capacities' per-user creation quota.
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"lumen/server/internal/document"
 	"net/http"
 	"strconv"
 	"strings"
@@ -40,10 +15,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// mcpMaxObjectsPerCall caps how many objects one tool call may create (the
-// object itself plus any tag objects resolved get-or-create). Capacities
-// enforces a per-user quota; for a single-user self-hosted server a per-call
-// cap keeps a runaway agent loop bounded without extra state.
 const mcpMaxObjectsPerCall = 20
 
 // mcpEndpointPath is where the streamable handler is mounted. The discovery
@@ -136,34 +107,39 @@ func (a *App) registerMCPTools(server *mcp.Server) {
 		Description: "Search the workspace by keyword. Case-insensitive substring over titles, body text, weblink reader articles and aliases. Returns id, type, title, an optional matched alias and a text snippet; use read_object for the full payload. Trashed objects and templates are excluded.",
 	}, a.mcpSearch)
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "read_object",
-		Title:       "Read an object",
-		Annotations: readOnly,
-		Description: "Read one object in full: type, title, properties (including aliases and weblink reader_content), links and body, the same assembly as GET /v1/objects/{id}. Also returns the body as Markdown when the object uses blocks, otherwise as plain text. Trashed objects are not readable.",
+		OutputSchema: mcpCanonicalOutputSchema[mcpReadObjectOutput](),
+		Name:         "read_object",
+		Title:        "Read an object",
+		Annotations:  readOnly,
+		Description:  "Read one object in full: type, title, properties (including aliases and weblink reader_content), links and body, the same assembly as GET /v1/objects/{id}. Also returns the body as Markdown when the object uses blocks, otherwise as plain text. Trashed objects are not readable.",
 	}, a.mcpReadObject)
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "read_object_blocks",
-		Title:       "Read an object's blocks",
-		Annotations: readOnly,
-		Description: "Read the block array of an object's body (the editor's structured representation, per the block schema) plus the same content rendered as Markdown. Use this when add_block, update_block or delete_block need exact block ids.",
+		OutputSchema: mcpCanonicalOutputSchema[mcpReadBlocksOutput](),
+		Name:         "read_object_blocks",
+		Title:        "Read an object's blocks",
+		Annotations:  readOnly,
+		Description:  "Read the block array of an object's body (the editor's structured representation, per the block schema) plus the same content rendered as Markdown. Use this when add_block, update_block or delete_block need exact block ids.",
 	}, a.mcpReadObjectBlocks)
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "list_by_type",
-		Title:       "List objects by type",
-		Annotations: readOnly,
-		Description: "List the objects of one type, most recently updated first, with limit/cursor pagination (the cursor is the same keyset cursor the REST API returns in X-Lumen-Next-Cursor). Trashed objects and templates are excluded.",
+		OutputSchema: mcpCanonicalOutputSchema[mcpObjectListOutput](),
+		Name:         "list_by_type",
+		Title:        "List objects by type",
+		Annotations:  readOnly,
+		Description:  "List the objects of one type, most recently updated first, with limit/cursor pagination (the cursor is the same keyset cursor the REST API returns in X-Lumen-Next-Cursor). Trashed objects and templates are excluded.",
 	}, a.mcpListByType)
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "list_by_tag",
-		Title:       "List objects by tag",
-		Annotations: readOnly,
-		Description: "List every object tagged with a tag name (tags are objects of type tag; resolve the names with list_by_type type_id=tag), most recently updated first. Trashed objects and templates are excluded.",
+		OutputSchema: mcpCanonicalOutputSchema[mcpObjectListOutput](),
+		Name:         "list_by_tag",
+		Title:        "List objects by tag",
+		Annotations:  readOnly,
+		Description:  "List every object tagged with a tag name (tags are objects of type tag; resolve the names with list_by_type type_id=tag), most recently updated first. Trashed objects and templates are excluded.",
 	}, a.mcpListByTag)
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "list_by_collection",
-		Title:       "List a collection's objects",
-		Annotations: readOnly,
-		Description: "List the objects of a collection in its stored, curated order. The id is an object of type collection; ids that no longer resolve or are trashed are skipped, like the REST collections endpoint.",
+		OutputSchema: mcpCanonicalOutputSchema[mcpObjectListOutput](),
+		Name:         "list_by_collection",
+		Title:        "List a collection's objects",
+		Annotations:  readOnly,
+		Description:  "List the objects of a collection in its stored, curated order. The id is an object of type collection; ids that no longer resolve or are trashed are skipped, like the REST collections endpoint.",
 	}, a.mcpListByCollection)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_type_shape",
@@ -174,46 +150,53 @@ func (a *App) registerMCPTools(server *mcp.Server) {
 
 	// Write tools (api:write).
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "create_object",
-		Title:       "Create an object",
-		Annotations: write(false),
-		Description: "Create an object of any type with its body from Markdown (headings, lists, tasks, quotes, code, tables, [[wikilinks]]). Properties are validated against the type shape (call get_type_shape first); blocks, rich_text and tags inside properties are managed by the server and rejected. tags is a list of tag names resolved get-or-create. Collections and templates cannot be created this way. The call creates at most 20 objects (the object plus new tags).",
+		OutputSchema: mcpCanonicalOutputSchema[mcpMutateOutput](),
+		Name:         "create_object",
+		Title:        "Create an object",
+		Annotations:  write(false),
+		Description:  "Create an object of any type with its body from Markdown (headings, lists, tasks, quotes, code, tables, [[wikilinks]]). Properties are validated against the type shape (call get_type_shape first); blocks, rich_text and tags inside properties are managed by the server and rejected. tags is a list of tag names resolved get-or-create. Collections and templates cannot be created this way. The call creates at most 20 objects (the object plus new tags).",
 	}, a.mcpCreateObject)
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "append_md_to_object",
-		Title:       "Append Markdown to an object",
-		Annotations: write(false),
-		Description: "Append Markdown to an object's body. An object that uses blocks gets the new blocks appended or inserted at position (0-based); an object without any text gains the block representation; a plain-text object stays plain-text (position is ignored). The write bumps the revision, snapshots the previous version and reaches mobile sync.",
+		OutputSchema: mcpCanonicalOutputSchema[mcpMutateOutput](),
+		Name:         "append_md_to_object",
+		Title:        "Append Markdown to an object",
+		Annotations:  write(false),
+		Description:  "Append Markdown to the canonical document, or insert at position (0-based). Requires base_revision and op_id for conflict detection and safe retry. Existing rich nodes are preserved. The write snapshots the previous version and reaches mobile sync.",
 	}, a.mcpAppendMarkdown)
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "append_to_daily_note",
-		Title:       "Append to the daily note",
-		Annotations: write(false),
-		Description: "Append Markdown to the daily note of a date, creating the note when it does not exist yet. The date defaults to today.",
+		OutputSchema: mcpCanonicalOutputSchema[mcpMutateOutput](),
+		Name:         "append_to_daily_note",
+		Title:        "Append to the daily note",
+		Annotations:  write(false),
+		Description:  "Append Markdown to an existing daily note. Open the journal first to obtain base_revision; supply it with op_id. The date defaults to today.",
 	}, a.mcpAppendDailyNote)
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "add_block",
-		Title:       "Add a block",
-		Annotations: write(false),
-		Description: "Add one editor block to an object's body at position (0-based; default: append). Prefer append_md_to_object for content; use this only when a single structured block must be placed precisely. A plain-text object rejects blocks (use append_md_to_object); an object without text gains the block representation. The block id is assigned by the server.",
+		OutputSchema: mcpCanonicalOutputSchema[mcpMutateOutput](),
+		Name:         "add_block",
+		Title:        "Add a block",
+		Annotations:  write(false),
+		Description:  "Add one editor block to an object's body at position (0-based; default: append). Prefer append_md_to_object for content; use this only when a single structured block must be placed precisely. All objects contain a canonical document. Requires base_revision and op_id. The block id is deterministically assigned from op_id.",
 	}, a.mcpAddBlock)
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "update_block",
-		Title:       "Replace a block",
-		Annotations: write(false),
-		Description: "Replace one block by id with a new block. The stored block id is kept stable. The previous object state is snapshotted in the server-side version history, like every object write.",
+		OutputSchema: mcpCanonicalOutputSchema[mcpMutateOutput](),
+		Name:         "update_block",
+		Title:        "Replace a block",
+		Annotations:  write(false),
+		Description:  "Replace one block by id with a new block. The stored block id is kept stable. The previous object state is snapshotted in the server-side version history, like every object write.",
 	}, a.mcpUpdateBlock)
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "delete_block",
-		Title:       "Delete a block",
-		Annotations: write(true),
-		Description: "Remove one block by id from an object's body. Deleting the last block empties the body. The previous object state is snapshotted in the server-side version history, like every object write.",
+		OutputSchema: mcpCanonicalOutputSchema[mcpMutateOutput](),
+		Name:         "delete_block",
+		Title:        "Delete a block",
+		Annotations:  write(true),
+		Description:  "Remove one block by id from an object's body. Deleting the last block empties the body. The previous object state is snapshotted in the server-side version history, like every object write.",
 	}, a.mcpDeleteBlock)
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "create_task",
-		Title:       "Create a task",
-		Annotations: write(false),
-		Description: "Create a task with a title and an optional Markdown body. due_date is YYYY-MM-DD, priority is free text, context_object_id must reference an existing object, recurrence repeats the task when completed, tags are names resolved get-or-create. The status starts at todo; a recurring task requires a due date. The call creates at most 20 objects (the task plus new tags).",
+		OutputSchema: mcpCanonicalOutputSchema[mcpMutateOutput](),
+		Name:         "create_task",
+		Title:        "Create a task",
+		Annotations:  write(false),
+		Description:  "Create a task with a title and an optional Markdown body. due_date is YYYY-MM-DD, priority is free text, context_object_id must reference an existing object, recurrence repeats the task when completed, tags are names resolved get-or-create. The status starts at todo; a recurring task requires a due date. The call creates at most 20 objects (the task plus new tags).",
 	}, a.mcpCreateTask)
 }
 
@@ -269,9 +252,6 @@ func mcpSnippet(text string) string {
 	return strings.TrimSpace(string(runes[:mcpSnippetLength])) + "…"
 }
 
-// mcpSearch is the Capacities `search` tool over the GET /v1/search matcher
-// (matchesSearchQuery): same fields, same ranking (display order), minus
-// pagination (agents narrow with type_id or read specific objects).
 func (a *App) mcpSearch(_ context.Context, _ *mcp.CallToolRequest, in mcpSearchInput) (*mcp.CallToolResult, mcpSearchOutput, error) {
 	query := strings.ToLower(strings.TrimSpace(in.Query))
 	if query == "" {
@@ -332,17 +312,15 @@ type mcpReadObjectOutput struct {
 
 // mcpReadBlocksOutput is returned as `any`: Block is a recursive type
 // (columns blocks contain blocks) and the SDK's JSON-schema inference
-// rejects cycles, so the tool ships no output schema. The JSON shape is the
-// same as the struct definition here.
+// rejects cycles, so the tool ships no output schema. A canonical document is supplied alongside
+// the reduced Markdown/tool projection below.
 type mcpReadBlocksOutput struct {
-	ObjectID string  `json:"object_id"`
-	Blocks   []Block `json:"blocks"`
-	Markdown string  `json:"markdown"`
+	Document *document.Document `json:"document"`
+	ObjectID string             `json:"object_id"`
+	Blocks   []Block            `json:"blocks"`
+	Markdown string             `json:"markdown"`
 }
 
-// mcpReadObject is the Capacities `getObjectContent` tool: the same assembly
-// as GET /v1/objects/{id} (properties, aliases, reader_content included),
-// plus a Markdown rendering of the body for convenience.
 func (a *App) mcpReadObject(_ context.Context, _ *mcp.CallToolRequest, in mcpObjectIDInput) (*mcp.CallToolResult, mcpReadObjectOutput, error) {
 	o, err := a.mcpLoadObject(in.ObjectID)
 	if err != nil {
@@ -357,9 +335,6 @@ func (a *App) mcpReadObject(_ context.Context, _ *mcp.CallToolRequest, in mcpObj
 	return nil, out, nil
 }
 
-// mcpReadObjectBlocks is the Capacities `readObjectBlocks` tool: the stored
-// block array plus its Markdown rendering, so an agent can pick block ids
-// for the block tools.
 func (a *App) mcpReadObjectBlocks(_ context.Context, _ *mcp.CallToolRequest, in mcpObjectIDInput) (*mcp.CallToolResult, any, error) {
 	o, err := a.mcpLoadObject(in.ObjectID)
 	if err != nil {
@@ -373,7 +348,7 @@ func (a *App) mcpReadObjectBlocks(_ context.Context, _ *mcp.CallToolRequest, in 
 	if strings.TrimSpace(markdown) == "" {
 		markdown = o.Content
 	}
-	return nil, mcpReadBlocksOutput{ObjectID: o.ID, Blocks: blocks, Markdown: markdown}, nil
+	return nil, mcpReadBlocksOutput{Document: o.Document, ObjectID: o.ID, Blocks: blocks, Markdown: markdown}, nil
 }
 
 type mcpListByTypeInput struct {
@@ -382,9 +357,6 @@ type mcpListByTypeInput struct {
 	Cursor string `json:"cursor,omitempty" jsonschema:"Continuation cursor from a previous answer's next_cursor; omit for the first page."`
 }
 
-// mcpListByType is the Capacities `listObjectsByObjectType` tool over
-// store.ObjectsByType plus the shared keyset pagination, with the REST API's
-// template exclusion.
 func (a *App) mcpListByType(_ context.Context, _ *mcp.CallToolRequest, in mcpListByTypeInput) (*mcp.CallToolResult, mcpObjectListOutput, error) {
 	if err := a.mcpCheckType(in.TypeID); err != nil {
 		return nil, mcpObjectListOutput{}, err
@@ -418,9 +390,6 @@ type mcpListByTagInput struct {
 	TagName string `json:"tag_name" jsonschema:"The exact title of a tag object (list them with list_by_type type_id=tag)."`
 }
 
-// mcpListByTag is the Capacities `listObjectsByTag` tool. The name was chosen
-// over the id because agents and users refer to tags by name; the server
-// resolves it through the same unique-title index the REST API uses.
 func (a *App) mcpListByTag(_ context.Context, _ *mcp.CallToolRequest, in mcpListByTagInput) (*mcp.CallToolResult, mcpObjectListOutput, error) {
 	name := strings.TrimSpace(in.TagName)
 	if name == "" {
@@ -462,10 +431,6 @@ type mcpCollectionIDInput struct {
 	CollectionID string `json:"collection_id" jsonschema:"Id of an object of type collection."`
 }
 
-// mcpListByCollection is the Capacities `listObjectsByCollection` tool over
-// collectionItemIDs (the same validation as the `collection` query filter)
-// and the same resolution rules as GET /v1/collections/{id}/items: stored
-// order, ids that no longer resolve or are trashed are skipped.
 func (a *App) mcpListByCollection(_ context.Context, _ *mcp.CallToolRequest, in mcpCollectionIDInput) (*mcp.CallToolResult, mcpObjectListOutput, error) {
 	ids, err := a.collectionItemIDs(in.CollectionID)
 	if err != nil {
@@ -486,8 +451,6 @@ type mcpTypeIDInput struct {
 	TypeID string `json:"type_id" jsonschema:"The object type id to describe."`
 }
 
-// mcpTypeShape is the Capacities `getObjectTypeShape` tool: the type registry
-// entry (GET /v1/types) so an agent can fill properties correctly.
 func (a *App) mcpTypeShape(_ context.Context, _ *mcp.CallToolRequest, in mcpTypeIDInput) (*mcp.CallToolResult, ObjectType, error) {
 	if err := a.mcpCheckType(in.TypeID); err != nil {
 		return nil, ObjectType{}, err
@@ -511,9 +474,6 @@ type mcpCreateObjectInput struct {
 	Properties map[string]any `json:"properties,omitempty" jsonschema:"Typed properties per the type shape. blocks, rich_text and tags are managed by the server and rejected here."`
 }
 
-// mcpCreateObject is the Capacities `createObjectViaMd`/`createPage` tool: the
-// exact createObjectFromMarkdownCore that POST /v1/objects/markdown uses
-// (same validation, same tag resolution, same transactional save).
 func (a *App) mcpCreateObject(ctx context.Context, _ *mcp.CallToolRequest, in mcpCreateObjectInput) (*mcp.CallToolResult, mcpMutateOutput, error) {
 	if err := a.requireMCPWriteScope(); err != nil {
 		return nil, mcpMutateOutput{}, err
@@ -536,19 +496,19 @@ func (a *App) mcpCreateObject(ctx context.Context, _ *mcp.CallToolRequest, in mc
 }
 
 type mcpAppendMarkdownInput struct {
-	ObjectID string `json:"object_id" jsonschema:"Id of the object to append to."`
-	Markdown string `json:"markdown" jsonschema:"The Markdown to append to the object's body."`
-	Position *int   `json:"position,omitempty" jsonschema:"0-based insertion index among the object's blocks; omit or send the block count to append at the end. Ignored for plain-text objects."`
+	BaseRevision uint64 `json:"base_revision" jsonschema:"Required current object revision."`
+	OperationID  string `json:"op_id" jsonschema:"Required unique retry identity, 8..128 characters."`
+	ObjectID     string `json:"object_id" jsonschema:"Id of the object to append to."`
+	Markdown     string `json:"markdown" jsonschema:"The Markdown to append to the object's body."`
+	Position     *int   `json:"position,omitempty" jsonschema:"0-based insertion index among the object's blocks; omit or send the block count to append at the end. Ignored for plain-text objects."`
 }
 
-// mcpAppendMarkdown is the Capacities `appendMdToObject` tool over
-// appendObjectMarkdownCore (POST /v1/objects/{id}/append-markdown).
 func (a *App) mcpAppendMarkdown(ctx context.Context, _ *mcp.CallToolRequest, in mcpAppendMarkdownInput) (*mcp.CallToolResult, mcpMutateOutput, error) {
 	if err := a.requireMCPWriteScope(); err != nil {
 		return nil, mcpMutateOutput{}, err
 	}
 	markdown := in.Markdown
-	o, err := a.appendObjectMarkdownCore(ctx, in.ObjectID, appendMarkdownRequest{Markdown: &markdown, Position: in.Position})
+	o, err := a.appendObjectMarkdownCore(ctx, in.ObjectID, appendMarkdownRequest{Markdown: &markdown, Position: in.Position, BaseRevision: in.BaseRevision, OperationID: in.OperationID})
 	if err != nil {
 		return nil, mcpMutateOutput{}, err
 	}
@@ -556,13 +516,12 @@ func (a *App) mcpAppendMarkdown(ctx context.Context, _ *mcp.CallToolRequest, in 
 }
 
 type mcpDailyNoteInput struct {
-	Markdown string `json:"markdown" jsonschema:"The Markdown to append to the daily note."`
-	Date     string `json:"date,omitempty" jsonschema:"The journal date, YYYY-MM-DD. Defaults to today."`
+	BaseRevision uint64 `json:"base_revision" jsonschema:"Required current object revision."`
+	OperationID  string `json:"op_id" jsonschema:"Required unique retry identity, 8..128 characters."`
+	Markdown     string `json:"markdown" jsonschema:"The Markdown to append to the daily note."`
+	Date         string `json:"date,omitempty" jsonschema:"The journal date, YYYY-MM-DD. Defaults to today."`
 }
 
-// mcpAppendDailyNote is the Capacities `saveToDailyNote` tool over
-// appendJournalMarkdownCore (POST /v1/journal/{date}/append), with the date
-// defaulting to today.
 func (a *App) mcpAppendDailyNote(ctx context.Context, _ *mcp.CallToolRequest, in mcpDailyNoteInput) (*mcp.CallToolResult, mcpMutateOutput, error) {
 	if err := a.requireMCPWriteScope(); err != nil {
 		return nil, mcpMutateOutput{}, err
@@ -571,7 +530,7 @@ func (a *App) mcpAppendDailyNote(ctx context.Context, _ *mcp.CallToolRequest, in
 	if date == "" {
 		date = todayJournalDate()
 	}
-	o, err := a.appendJournalMarkdownCore(ctx, date, in.Markdown, "")
+	o, err := a.appendJournalMarkdownCore(ctx, date, in.Markdown, "", in.BaseRevision, in.OperationID)
 	if err != nil {
 		return nil, mcpMutateOutput{}, err
 	}
@@ -737,16 +696,13 @@ func (b mcpBlockInput) toBlock() (Block, error) {
 }
 
 type mcpAddBlockInput struct {
-	ObjectID string        `json:"object_id" jsonschema:"Id of the object to add the block to."`
-	Block    mcpBlockInput `json:"block" jsonschema:"The block to add, per the block schema."`
-	Position *int          `json:"position,omitempty" jsonschema:"0-based index among the object's blocks; omit to append at the end."`
+	BaseRevision uint64        `json:"base_revision" jsonschema:"Required current object revision."`
+	OperationID  string        `json:"op_id" jsonschema:"Required unique retry identity, 8..128 characters."`
+	ObjectID     string        `json:"object_id" jsonschema:"Id of the object to add the block to."`
+	Block        mcpBlockInput `json:"block" jsonschema:"The block to add, per the block schema."`
+	Position     *int          `json:"position,omitempty" jsonschema:"0-based index among the object's blocks; omit to append at the end."`
 }
 
-// mcpAddBlock is the Capacities `addBlock` tool. It follows the convert-merge
-// representation rules: an object with blocks gets the block inserted, an
-// object without any text gains the block representation, and a plain-text
-// object refuses blocks (a block array is authoritative in the editor and
-// would hide the plain body).
 func (a *App) mcpAddBlock(ctx context.Context, _ *mcp.CallToolRequest, in mcpAddBlockInput) (*mcp.CallToolResult, mcpMutateOutput, error) {
 	if err := a.requireMCPWriteScope(); err != nil {
 		return nil, mcpMutateOutput{}, err
@@ -760,6 +716,26 @@ func (a *App) mcpAddBlock(ctx context.Context, _ *mcp.CallToolRequest, in mcpAdd
 	o, err := a.mcpLoadObject(in.ObjectID)
 	if err != nil {
 		return nil, mcpMutateOutput{}, err
+	}
+	if o.Document != nil {
+		nodes, e := canonicalDocumentFromBlocks([]Block{block})
+		if e != nil {
+			return nil, mcpMutateOutput{}, e
+		}
+		position := 0
+		if len(nodes.Blocks) != 1 {
+			return nil, mcpMutateOutput{}, errors.New("Expected one block")
+		}
+		commandType := "append"
+		if in.Position != nil {
+			commandType = "insert"
+			position = *in.Position
+		}
+		e = a.mutateCanonicalMCP(ctx, &o, document.Command{Type: commandType, Position: position, Node: &nodes.Blocks[0]}, in.BaseRevision, in.OperationID)
+		if e != nil {
+			return nil, mcpMutateOutput{}, e
+		}
+		return nil, mcpMutateOutput{Object: o}, nil
 	}
 	blocks, err := objectBlocks(o)
 	if err != nil {
@@ -805,13 +781,13 @@ func (a *App) mcpAddBlock(ctx context.Context, _ *mcp.CallToolRequest, in mcpAdd
 }
 
 type mcpUpdateBlockInput struct {
-	ObjectID string        `json:"object_id" jsonschema:"Id of the object that holds the block."`
-	BlockID  string        `json:"block_id" jsonschema:"Id of the stored block to replace."`
-	Block    mcpBlockInput `json:"block" jsonschema:"The replacement block, per the block schema. The stored block id is kept."`
+	BaseRevision uint64        `json:"base_revision" jsonschema:"Required current object revision."`
+	OperationID  string        `json:"op_id" jsonschema:"Required unique retry identity, 8..128 characters."`
+	ObjectID     string        `json:"object_id" jsonschema:"Id of the object that holds the block."`
+	BlockID      string        `json:"block_id" jsonschema:"Id of the stored block to replace."`
+	Block        mcpBlockInput `json:"block" jsonschema:"The replacement block, per the block schema. The stored block id is kept."`
 }
 
-// mcpUpdateBlock is the Capacities `updateBlock` tool: it replaces one block
-// by id, keeping the stored id stable so other references survive.
 func (a *App) mcpUpdateBlock(ctx context.Context, _ *mcp.CallToolRequest, in mcpUpdateBlockInput) (*mcp.CallToolResult, mcpMutateOutput, error) {
 	if err := a.requireMCPWriteScope(); err != nil {
 		return nil, mcpMutateOutput{}, err
@@ -825,6 +801,21 @@ func (a *App) mcpUpdateBlock(ctx context.Context, _ *mcp.CallToolRequest, in mcp
 	o, err := a.mcpLoadObject(in.ObjectID)
 	if err != nil {
 		return nil, mcpMutateOutput{}, err
+	}
+	if o.Document != nil {
+		block.ID = in.BlockID
+		nodes, e := canonicalDocumentFromBlocks([]Block{block})
+		if e != nil {
+			return nil, mcpMutateOutput{}, e
+		}
+		if len(nodes.Blocks) != 1 {
+			return nil, mcpMutateOutput{}, errors.New("Expected one block")
+		}
+		e = a.mutateCanonicalMCP(ctx, &o, document.Command{Type: "replace", NodeID: in.BlockID, Node: &nodes.Blocks[0]}, in.BaseRevision, in.OperationID)
+		if e != nil {
+			return nil, mcpMutateOutput{}, e
+		}
+		return nil, mcpMutateOutput{Object: o}, nil
 	}
 	blocks, err := objectBlocks(o)
 	if err != nil {
@@ -856,13 +847,12 @@ func (a *App) mcpUpdateBlock(ctx context.Context, _ *mcp.CallToolRequest, in mcp
 }
 
 type mcpDeleteBlockInput struct {
-	ObjectID string `json:"object_id" jsonschema:"Id of the object that holds the block."`
-	BlockID  string `json:"block_id" jsonschema:"Id of the stored block to remove."`
+	BaseRevision uint64 `json:"base_revision" jsonschema:"Required current object revision."`
+	OperationID  string `json:"op_id" jsonschema:"Required unique retry identity, 8..128 characters."`
+	ObjectID     string `json:"object_id" jsonschema:"Id of the object that holds the block."`
+	BlockID      string `json:"block_id" jsonschema:"Id of the stored block to remove."`
 }
 
-// mcpDeleteBlock is the Capacities `deleteBlock` tool. Deleting the last block
-// empties the body; the previous state is snapshotted by the central save path
-// (the server-side version history every write produces).
 func (a *App) mcpDeleteBlock(ctx context.Context, _ *mcp.CallToolRequest, in mcpDeleteBlockInput) (*mcp.CallToolResult, mcpMutateOutput, error) {
 	if err := a.requireMCPWriteScope(); err != nil {
 		return nil, mcpMutateOutput{}, err
@@ -872,6 +862,12 @@ func (a *App) mcpDeleteBlock(ctx context.Context, _ *mcp.CallToolRequest, in mcp
 	o, err := a.mcpLoadObject(in.ObjectID)
 	if err != nil {
 		return nil, mcpMutateOutput{}, err
+	}
+	if o.Document != nil {
+		if e := a.mutateCanonicalMCP(ctx, &o, document.Command{Type: "delete", NodeID: in.BlockID}, in.BaseRevision, in.OperationID); e != nil {
+			return nil, mcpMutateOutput{}, e
+		}
+		return nil, mcpMutateOutput{Object: o}, nil
 	}
 	blocks, err := objectBlocks(o)
 	if err != nil {
@@ -949,10 +945,6 @@ type mcpCreateTaskInput struct {
 	Tags            []string            `json:"tags,omitempty" jsonschema:"Tag names to attach, resolved get-or-create (at most 19 so the call stays within the 20-object creation limit)."`
 }
 
-// mcpCreateTask is the Capacities `createTask` tool: it builds a task through
-// createObjectFromMarkdownCore, so the recurring-task validation
-// (validateTaskRecurrence via validateObject) and every other object rule
-// apply unchanged. The status starts at todo.
 func (a *App) mcpCreateTask(ctx context.Context, _ *mcp.CallToolRequest, in mcpCreateTaskInput) (*mcp.CallToolResult, mcpMutateOutput, error) {
 	if err := a.requireMCPWriteScope(); err != nil {
 		return nil, mcpMutateOutput{}, err
@@ -1007,6 +999,9 @@ func (a *App) mcpCreateTask(ctx context.Context, _ *mcp.CallToolRequest, in mcpC
 
 // objectBlocks decodes the stored properties.blocks array into typed blocks.
 func objectBlocks(o Object) ([]Block, error) {
+	if o.Document != nil {
+		return documentMarkdownBlocks(*o.Document), nil
+	}
 	raw, _ := o.Properties["blocks"].([]any)
 	if len(raw) == 0 {
 		return []Block{}, nil

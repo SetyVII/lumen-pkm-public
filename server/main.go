@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"lumen/server/internal/document"
 	"mime"
 	"net"
 	"net/http"
@@ -351,6 +352,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/objects/{id}", a.deleteObject)
 	mux.HandleFunc("GET /v1/objects/{id}/backlinks", a.backlinks)
 	a.registerBlockRoutes(mux)
+	a.registerDocumentRoutes(mux)
 	a.registerHabitRoutes(mux)
 	a.registerTrashRoutes(mux)
 	a.registerCollectionRoutes(mux)
@@ -388,10 +390,8 @@ func (a *App) Handler() http.Handler {
 	// behind the same bearer token and scope model.
 	a.registerMCPRoutes(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// X-Lumen-Api-Version (modeled on Capacities' X-Capacities-Api-Version)
-		// is echoed on every response. An absent or unknown request header
-		// never fails: the server always answers with the version it speaks.
 		w.Header().Set("X-Lumen-Api-Version", apiVersion)
+		w.Header().Set("X-Lumen-Document-Version", "2")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -403,8 +403,8 @@ func (a *App) Handler() http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization,Content-Type,X-Lumen-Api-Version")
-			w.Header().Set("Access-Control-Expose-Headers", "X-Lumen-Api-Version,X-Lumen-Next-Cursor")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization,Content-Type,X-Lumen-Api-Version,X-Lumen-Document-Version")
+			w.Header().Set("Access-Control-Expose-Headers", "X-Lumen-Api-Version,X-Lumen-Next-Cursor,X-Lumen-Document-Version")
 			w.Header().Set("Access-Control-Max-Age", "600")
 		}
 		if r.Method == http.MethodOptions {
@@ -425,6 +425,11 @@ func (a *App) Handler() http.Handler {
 				jsonError(w, 403, err.Error())
 				return
 			}
+		}
+		mutation := r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete
+		if mutation && r.URL.Path != "/mcp" && !readOnlyPostPaths[r.URL.Path] && r.Header.Get("X-Lumen-Document-Version") != "2" {
+			jsonError(w, http.StatusUpgradeRequired, "This server requires canonical document protocol 2; update the client")
+			return
 		}
 		mux.ServeHTTP(w, r)
 	})
@@ -568,7 +573,7 @@ func (a *App) getObject(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResponse(w, 200, o)
 }
-func (a *App) validateObject(o *Object) error {
+func (a *App) validateObjectTitle(o *Object) error {
 	o.Title = strings.TrimSpace(o.Title)
 	if len([]rune(o.Title)) > 1000 {
 		return errors.New("An object title supports up to 1000 characters")
@@ -580,12 +585,36 @@ func (a *App) validateObject(o *Object) error {
 			return errors.New("An object with this title already exists; give this object a distinct name")
 		}
 	}
+	return nil
+}
+func (a *App) validateObject(o *Object) error {
+	return a.validateObjectReferences(o, false)
+}
+
+func (a *App) validateObjectReferences(o *Object, allowPending bool) error {
+	return a.validateObjectWithAsset(o, allowPending, nil)
+}
+
+func (a *App) validateObjectWithAsset(o *Object, allowPending bool, staged *Asset) error {
+	if err := a.validateObjectTitle(o); err != nil {
+		return err
+	}
 	t, err := a.store.Type(o.TypeID)
 	if err != nil {
 		return errors.New("Unknown object type")
 	}
 	if o.Properties == nil {
 		o.Properties = map[string]any{}
+	}
+	if staged != nil && mediaSourceID(*o) == staged.ID {
+		if !mediaMatchesObject(*o, *staged) {
+			return errors.New("Media source has the wrong file type")
+		}
+	} else if err := a.validateMediaCreation(o, allowPending); err != nil {
+		return err
+	}
+	if err := a.normalizeObjectDocument(o); err != nil {
+		return err
 	}
 	// `aliases` is a default property owned by the server (see aliases.go), so
 	// it is validated here instead of through the per-type schema.
@@ -600,7 +629,7 @@ func (a *App) validateObject(o *Object) error {
 	if o.Links == nil {
 		o.Links = []string{}
 	}
-	if err := a.validatePropertyValues(o, t); err != nil {
+	if err := a.validatePropertyValuesReferences(o, t, allowPending); err != nil {
 		return err
 	}
 	if o.TypeID == "collection" {
@@ -624,7 +653,14 @@ func (a *App) validateObject(o *Object) error {
 		}
 		// A trashed target is allowed: it is restorable, and keeping the
 		// reference is what makes restore bring backlinks back intact.
-		if !a.referenceExists(id) {
+		if !validObjectReferenceID(id) {
+			return errors.New("Linked object identity is invalid")
+		}
+		_, exists, err := a.referenceTarget(id)
+		if err != nil {
+			return fmt.Errorf("Could not read linked object: %w", err)
+		}
+		if !exists && !allowPending {
 			return errors.New("Linked object does not exist")
 		}
 		dedup[id] = true
@@ -670,21 +706,43 @@ func (a *App) prepareSave(o *Object) []Record {
 }
 
 func (a *App) saveObject(_ context.Context, o *Object) error {
+	if err := a.normalizeObjectDocument(o); err != nil {
+		return err
+	}
 	// Recreating an object supersedes its tombstone and any stale trash payload.
 	return a.store.PutBatch(a.prepareSave(o), saveCleanup(o.ID))
 }
 func (a *App) createObject(w http.ResponseWriter, r *http.Request) {
 	var o Object
-	if !decode(w, r, &o) {
+	if !decodeLimit(w, r, &o, document.MaxBytes+(1<<20)) {
 		return
 	}
 	a.writeMu.Lock()
 	defer a.writeMu.Unlock()
-	o.ID = newID()
+	if o.ID == "" {
+		o.ID = newID()
+	} else if !validObjectReferenceID(o.ID) {
+		jsonError(w, 400, "Invalid object identity")
+		return
+	} else {
+		var reserved bool
+		if err := a.store.db.QueryRow("SELECT EXISTS(SELECT 1 FROM records WHERE id=? AND kind IN ('object','tombstone','trash'))", o.ID).Scan(&reserved); err != nil {
+			jsonError(w, 500, "Could not check object identity")
+			return
+		}
+		if reserved {
+			jsonError(w, 409, "Object identity already exists; reload it or choose a new identity")
+			return
+		}
+	}
 	o.Revision = 0 // revisions are assigned by this store, never by API callers
 	o.Incarnation = ""
 	o.CreatedAt = now()
 	o.UpdatedAt = o.CreatedAt
+	if err := a.validateMediaCreation(&o, false); err != nil {
+		jsonError(w, 400, err.Error())
+		return
+	}
 	if err := a.validateObject(&o); err != nil {
 		jsonError(w, 400, err.Error())
 		return
@@ -700,9 +758,17 @@ func (a *App) createObject(w http.ResponseWriter, r *http.Request) {
 }
 func (a *App) updateObject(w http.ResponseWriter, r *http.Request) {
 	var patch map[string]json.RawMessage
-	if !decode(w, r, &patch) {
+	if !decodeLimit(w, r, &patch, document.MaxBytes+(1<<20)) {
 		return
 	}
+	var opID string
+	if raw, ok := patch["op_id"]; ok {
+		if json.Unmarshal(raw, &opID) != nil || len(opID) < 8 || len(opID) > 128 {
+			jsonError(w, 400, "op_id must contain 8..128 characters")
+			return
+		}
+	}
+	requestDigest := documentRequestDigest(r.PathValue("id"), patch)
 	var baseRevision uint64
 	if raw, ok := patch["base_revision"]; ok {
 		if err := json.Unmarshal(raw, &baseRevision); err != nil {
@@ -716,6 +782,35 @@ func (a *App) updateObject(w http.ResponseWriter, r *http.Request) {
 	var o Object
 	if err := a.store.Get("object", r.PathValue("id"), &o); err != nil {
 		jsonError(w, 404, "Object not found")
+		return
+	}
+	if opID != "" {
+		if receipt, err := a.store.documentReceipt(opID); err == nil {
+			if receipt.Digest != requestDigest {
+				jsonError(w, 409, "op_id was used with different payload")
+				return
+			}
+			if _, err := a.store.Object(receipt.Object.ID); err != nil {
+				jsonError(w, 404, "Object not found")
+				return
+			}
+			if receipt.Expired {
+				jsonError(w, 410, "Operation was committed; receipt expired. Reload the object")
+				return
+			}
+			jsonResponse(w, 200, receipt.Object)
+			return
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			jsonError(w, 500, "Could not read receipt")
+			return
+		}
+	}
+	if raw, editing := patch["document"]; editing && string(raw) == "null" {
+		jsonError(w, 400, "document cannot be null")
+		return
+	}
+	if o.Document != nil && baseRevision == 0 {
+		jsonError(w, 400, "base_revision is required")
 		return
 	}
 	if baseRevision > 0 && baseRevision != o.Revision {
@@ -732,6 +827,20 @@ func (a *App) updateObject(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 	before := cloneObject(o)
+	if o.Document != nil {
+		if _, editing := patch["document"]; editing && (baseRevision == 0 || opID == "") {
+			jsonError(w, 400, "base_revision and op_id are required for document edits")
+			return
+		}
+		if raw, editing := patch["content"]; editing {
+			var content string
+			_ = json.Unmarshal(raw, &content)
+			if _, native := patch["document"]; !native && content != o.Content {
+				jsonError(w, 400, "Edit the canonical document, not its text projection")
+				return
+			}
+		}
+	}
 	// JSON unmarshalling reuses a non-nil map. Preserve its managed values
 	// before the incoming property map can overwrite those same entries.
 	previousProperties := make(map[string]any, len(o.Properties))
@@ -744,7 +853,7 @@ func (a *App) updateObject(w http.ResponseWriter, r *http.Request) {
 		// fresh map so omitted editable keys really disappear.
 		o.Properties = nil
 	}
-	if !apply("title", &o.Title) || !apply("type_id", &o.TypeID) || !apply("content", &o.Content) || !apply("properties", &o.Properties) || !apply("links", &o.Links) {
+	if !apply("document", &o.Document) || !apply("title", &o.Title) || !apply("type_id", &o.TypeID) || !apply("content", &o.Content) || !apply("properties", &o.Properties) || !apply("links", &o.Links) {
 		return
 	}
 	// Add relations against the latest saved object while holding writeMu. A
@@ -755,22 +864,47 @@ func (a *App) updateObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	o.Links = append(o.Links, additions...)
-	a.preserveManagedAssets(&o, previousProperties, patch["properties"])
-	preserveReaderMetadata(&o, previousProperties)
-	invalidateImplicitFormats(&o, previousContent, patch)
-	if err := a.validateObject(&o); err != nil {
+	explicitProperties, err := a.applyPropertyIntents(&o, patch)
+	if err != nil {
 		jsonError(w, 400, err.Error())
 		return
 	}
-	if before.Title == o.Title && before.TypeID == o.TypeID && before.Content == o.Content &&
+	a.preserveManagedAssets(&o, previousProperties, explicitProperties)
+	preserveReaderMetadata(&o, previousProperties)
+	invalidateImplicitFormats(&o, previousContent, patch)
+	var validationErr error
+	if before.TypeID == o.TypeID && reflect.DeepEqual(before.Properties, o.Properties) && sameStrings(before.Links, o.Links) {
+		// Existing unrelated relationships may still await an offline target or
+		// carry a reported type mismatch. Editing body/title cannot discard them.
+		validationErr = a.validateObjectTitle(&o)
+		if validationErr == nil {
+			validationErr = a.normalizeObjectDocument(&o)
+		}
+	} else {
+		validationErr = a.validateObject(&o)
+	}
+	if validationErr != nil {
+		jsonError(w, 400, validationErr.Error())
+		return
+	}
+	if before.Title == o.Title && before.TypeID == o.TypeID && before.Content == o.Content && reflect.DeepEqual(before.Document, o.Document) &&
 		sameStrings(before.Links, o.Links) && sameStrings(before.PropertyLinks, o.PropertyLinks) &&
 		reflect.DeepEqual(before.Properties, o.Properties) {
 		o.SyncStatus, o.SyncError = "synced", ""
+		if opID != "" {
+			if err := a.store.PutBatch([]Record{{Kind: "document_receipt", ID: opID, Value: DocumentReceipt{Digest: requestDigest, Object: o}}}, nil); err != nil {
+				jsonError(w, 500, "Could not persist receipt")
+				return
+			}
+		}
 		jsonResponse(w, 200, o)
 		return
 	}
 	o.UpdatedAt = now()
 	records := a.prepareSave(&o)
+	if opID != "" {
+		records = append(records, Record{Kind: "document_receipt", ID: opID, Value: DocumentReceipt{Digest: requestDigest, Object: o}})
+	}
 	// A type must never keep pointing at an object that stopped being a
 	// template of that type. The cleanup is committed with the object change.
 	records = append(records, a.templateDefaultCleanup(before, o)...)
@@ -1227,7 +1361,7 @@ func (a *App) newMediaObject(asset *Asset) (Object, error) {
 		props["image_asset_id"] = asset.ID
 	}
 	o := Object{ID: asset.MediaObjectID, TypeID: typ, Title: title, Properties: props, Links: []string{}, CreatedAt: now(), UpdatedAt: now()}
-	return o, a.validateObject(&o)
+	return o, a.validateObjectWithAsset(&o, false, asset)
 }
 
 func (a *App) promoteAsset(w http.ResponseWriter, r *http.Request) {

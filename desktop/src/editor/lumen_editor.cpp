@@ -1,4 +1,7 @@
 #include "lumen_editor.hpp"
+#include "lumen_document.hpp"
+#include "lumen_clipboard.hpp"
+#include "lumen_table_controls.hpp"
 #include "lumen_aliases.hpp"
 #include "lumen_icons.hpp"
 #include <QClipboard>
@@ -6,6 +9,7 @@
 #include <QDesktopServices>
 #include <QGuiApplication>
 #include <QUuid>
+#include <QTimeZone>
 #include <algorithm>
 
 namespace {
@@ -17,13 +21,12 @@ constexpr int BlockStyleProperty = LumenSyntax::BlockStyleProperty;
 constexpr int CodeLanguageProperty = LumenSyntax::CodeLanguageProperty;
 constexpr int MathLatexProperty = QTextFormat::UserProperty + 707;
 constexpr int MathDisplayProperty = QTextFormat::UserProperty + 708;
-// Group members share the group UUID; the block keeps its own type while the
-// box is drawn from the shared property (Capacities group block).
 constexpr int GroupBlockProperty = QTextFormat::UserProperty + 709;
 constexpr int NativeFrameProperty = QTextFormat::UserProperty + 712;
 constexpr int LayoutBoundaryProperty = QTextFormat::UserProperty + 713;
 constexpr int NativeBlockProperty = QTextFormat::UserProperty + 714;
 constexpr int NativeRunProperty = QTextFormat::UserProperty + 715;
+constexpr int EmptyDocumentProperty = QTextFormat::UserProperty + 717;
 constexpr int CollapsedFrameStyleProperty = QTextFormat::UserProperty + 716;
 // Per-block style colors chosen from the handle menu "Style" submenu. Stored
 // as "#rrggbb" strings on the block format and serialized as additive
@@ -101,19 +104,6 @@ void restoreUngroupedMargins(const QTextBlock &block, bool dark) {
     else format.clearBackground();
     QTextCursor cursor(block);
     cursor.setBlockFormat(format);
-}
-// Chip styling for a pasted block reference. Snapshot rendering: the text of
-// the referenced block at paste time; live transclusion is a follow-up.
-QTextCharFormat blockReferenceChipFormat(const QString &blockId, bool dark) {
-    QTextCharFormat chip;
-    chip.setAnchor(true);
-    chip.setAnchorHref("lumen://block/" + blockId);
-    chip.setProperty(ReferenceTypeProperty, "block");
-    chip.setForeground(QColor(dark ? "#d2b7f5" : "#7b589d"));
-    chip.setBackground(QColor(dark ? "#2d2638" : "#f2edf8"));
-    chip.setFontUnderline(true);
-    chip.setToolTip("Block reference");
-    return chip;
 }
 // Object and block references render as read-only chips: find counts their
 // title but replace must not rewrite the link text.
@@ -289,7 +279,7 @@ RichEditor::RichEditor(QWidget *parent) : QTextEdit(parent) {
     });
     connect(this, &QTextEdit::cursorPositionChanged, this, [this] {
         updateInlineQuery();
-        updateCodeBar();
+        updateCodeBar(); updateImageBar();
         if (!isReadOnly() && textCursor().block().isValid()) {
             activeHandleBlock_ = textCursor().block();
             if (blockHandle_) {
@@ -298,8 +288,8 @@ RichEditor::RichEditor(QWidget *parent) : QTextEdit(parent) {
             }
         }
     });
-    connect(document(), &QTextDocument::contentsChanged, this, [this] { updateCodeBar(); });
-    connect(verticalScrollBar(), &QScrollBar::valueChanged, this, [this] { updateCodeBar(); });
+    connect(document(), &QTextDocument::contentsChanged, this, [this] { updateCodeBar(); updateImageBar(); });
+    connect(verticalScrollBar(), &QScrollBar::valueChanged, this, [this] { updateCodeBar(); updateImageBar(); });
     highlighter_ = new LumenSyntaxHighlighter(document());
     // Live counter while the find bar is open: document edits (typing,
     // replace, reference reconciliation) rescan after the current event loop
@@ -322,6 +312,7 @@ RichEditor::RichEditor(QWidget *parent) : QTextEdit(parent) {
         findRefreshTimer_.start(0);
     });
     ensureBlockIds();
+    LumenTableControls::install(this);
 }
 RichEditor::~RichEditor() {
     if (findQueryEdit_) findQueryEdit_->removeEventFilter(this);
@@ -349,6 +340,7 @@ void RichEditor::setAppearance(bool dark, bool reducedMotion) {
         }
     if (mathPopup_) styleLayer(mathPopup_);
     if (codeBar_) styleLayer(codeBar_);
+    if (imageBar_) styleLayer(imageBar_);
     if (findBar_) {
         styleLayer(findBar_);
         updateFindBarIcons();
@@ -393,11 +385,16 @@ void RichEditor::styleLayer(QWidget *layer) {
     const QString foreground = dark_ ? "#e4e3e2" : "#303034";
     const QString border = dark_ ? "#29292e" : "#e3e3e7";
     const QString hover = dark_ ? "#2b2b2e" : "#f4f4f5";
+    auto palette = layer->palette();
+    for (auto role : {QPalette::Window, QPalette::Base, QPalette::AlternateBase, QPalette::Button}) palette.setColor(role, QColor(background));
+    for (auto role : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText}) palette.setColor(role, QColor(foreground));
+    palette.setColor(QPalette::Highlight, QColor("#7060c0")); palette.setColor(QPalette::HighlightedText, Qt::white);
+    layer->setPalette(palette); layer->setAutoFillBackground(true);
     layer->setStyleSheet(QString(
-        "QFrame#editorLayer{background:%1;color:%2;border:1px solid %3;border-radius:9px;}"
+        "QFrame#editorLayer,QFrame#imageBlockToolbar,QDialog#temporalPicker,QDialog#blockReferencePicker{background:%1;color:%2;border:1px solid %3;border-radius:9px;}"
         "QFrame#findBar{background:%1;color:%2;border:1px solid %3;border-radius:9px;}"
-        "QLabel{color:%2;background:transparent;border:0;}"
-        "QLineEdit,QComboBox{background:%1;color:%2;border:1px solid %3;border-radius:5px;padding:7px;}"
+        "QLabel,QCheckBox{color:%2;background:transparent;border:0;}"
+        "QLineEdit,QComboBox,QDateEdit,QTimeEdit{background:%1;color:%2;border:1px solid %3;border-radius:5px;padding:7px;}"
         "QLineEdit:focus,QComboBox:focus{border:1px solid #b499d4;}"
         "QListWidget{background:%1;color:%2;border:0;outline:none;}"
         "QListWidget::item{padding:4px 8px;border-radius:10px;}"
@@ -650,13 +647,16 @@ void RichEditor::rebuildReferences() {
     };
 
     auto attachTypeBadge = [this](QListWidgetItem *item, const QString &typeId) {
-        auto *badgeLabel = new QLabel(typeLabel(typeId), referenceResults_);
-        const QString bg = dark_ ? "#382f24" : "#fef3c7";
-        const QString fg = dark_ ? "#f59e0b" : "#b45309";
-        badgeLabel->setStyleSheet(QString("background: %1; color: %2; border-radius: 4px; padding: 2px 7px; font-size: 11px; font-weight: 600; margin-right: 8px;").arg(bg, fg));
-        badgeLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        badgeLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
-        referenceResults_->setItemWidget(item, badgeLabel);
+        auto *row = new QWidget(referenceResults_);
+        row->setAttribute(Qt::WA_TransparentForMouseEvents);
+        auto *layout = new QHBoxLayout(row); layout->setContentsMargins(38, 0, 8, 0); layout->setSpacing(8);
+        auto *title = new QLabel(item->text(), row); title->setObjectName("creationActionLabel");
+        title->setStyleSheet("background:transparent;"); title->setMinimumWidth(0);
+        title->setToolTip(item->text()); layout->addWidget(title, 1);
+        auto *badgeLabel = new QLabel(typeLabel(typeId), row);
+        const QString bg = dark_ ? "#382f24" : "#fef3c7", fg = dark_ ? "#f59e0b" : "#b45309";
+        badgeLabel->setStyleSheet(QString("background:%1;color:%2;border-radius:4px;padding:2px 7px;font-size:11px;font-weight:600;").arg(bg,fg));
+        layout->addWidget(badgeLabel, 0); referenceResults_->setItemWidget(item, row);
     };
 
     // D6 (aliases): a result that matched through an alias shows the alias
@@ -912,9 +912,6 @@ void RichEditor::insertReferenceIcon(QTextCursor &cursor, const QTextCharFormat 
 void RichEditor::insertReferenceAt(QTextCursor cursor, const QJsonObject &object, const QString &linkText) {
     const QString id = value(object, "id"), title = value(object, "title"), type = value(object, "type_id");
     if (id.isEmpty() || title.isEmpty() || cursor.document() != document()) return;
-    // D6 (aliases): the chip's display text is the matched alias when the
-    // result was found through one (Capacities inserts the alias); the
-    // anchor href, tooltip and reference id keep the canonical object.
     const QString displayed = linkText.isEmpty() ? title : linkText;
     cursor.setKeepPositionOnInsert(false);
     cursor.beginEditBlock();
@@ -1092,6 +1089,95 @@ void RichEditor::ensureBlockIds() {
     if (began) transaction.endEditBlock();
     normalizing_ = false;
 }
+namespace {
+QJsonObject canonicalLocation(const QJsonArray &nodes, const QString &identity, const QString &parent = {}) {
+    for (int i = 0; i < nodes.size(); ++i) {
+        const auto node = nodes[i].toObject();
+        if (node.value("id").toString() == identity) return {{"parent_id", parent}, {"position", i}, {"node", node}};
+        const auto nested = canonicalLocation(node.value("children").toArray(), identity, node.value("id").toString());
+        if (!nested.isEmpty()) return nested;
+    }
+    return {};
+}
+}
+bool RichEditor::selectCanonicalBlock(const QString &identity) {
+    QTextFrame *matched = nullptr;
+    std::function<void(QTextFrame *)> visit = [&](QTextFrame *frame) {
+        const auto data = QJsonDocument::fromJson(frame->frameFormat().property(NativeFrameProperty).toByteArray()).object();
+        if (data.value("canonical_node").toObject().value("id").toString() == identity) matched = frame;
+        for (auto *child : frame->childFrames()) visit(child);
+    };
+    visit(document()->rootFrame());
+    QTextCursor selection(document());
+    if (matched) {
+        selection.setPosition(matched->firstPosition() - 1);
+        selection.setPosition(matched->lastPosition() + 1, QTextCursor::KeepAnchor);
+    } else {
+        const auto block = findBlockById(identity); if (!block.isValid()) return false;
+        selection.setPosition(block.position()); selection.setPosition(block.position() + block.length() - 1, QTextCursor::KeepAnchor);
+    }
+    setTextCursor(selection); return true;
+}
+bool RichEditor::applyCanonicalCommands(const QJsonArray &commands, QString *error) {
+    if (isReadOnly()) return false;
+    const auto previous = canonicalDocument(); QJsonObject next;
+    if (!LumenDocument::applyCommands(previous, commands, &next, error)) return false;
+    if (next == previous) return true;
+    RichEditor rendered;
+    rendered.resourceProvider = resourceProvider;
+    rendered.setAppearance(dark_, reducedMotion_);
+    rendered.setFont(font()); rendered.setCanonicalDocument(next);
+    for (auto block = rendered.document()->begin(); block.isValid(); block = block.next())
+        for (auto it = block.begin(); !it.atEnd(); ++it) if (it.fragment().charFormat().isImageFormat()) {
+            const QUrl name(it.fragment().charFormat().toImageFormat().name());
+            const auto resource = rendered.document()->resource(QTextDocument::ImageResource, name);
+            if (resource.isValid()) document()->addResource(QTextDocument::ImageResource, name, resource);
+        }
+    QTextCursor source(rendered.document()); source.select(QTextCursor::Document);
+    const QTextDocumentFragment fragment(source);
+    const auto selectedID = blockId(textCursor().block());
+    QTextCursor edit(document()); edit.beginEditBlock(); edit.select(QTextCursor::Document);
+    edit.removeSelectedText();
+    edit.setBlockFormat(rendered.document()->begin().blockFormat()); edit.setCharFormat(QTextCharFormat());
+    edit.insertFragment(fragment); edit.endEditBlock();
+    loadedCanonicalEmpty_ = false;
+    if (!focusBlock(selectedID)) setTextCursor(edit);
+    refreshToggleVisibility(); refreshDividerRule();
+    return true;
+}
+QJsonObject RichEditor::canonicalDocument() const {
+    if ((loadedCanonicalEmpty_ || document()->begin().blockFormat().property(EmptyDocumentProperty).toBool()) && document()->characterCount() == 1 && !document()->begin().textList()
+        && !document()->begin().blockFormat().headingLevel()
+        && document()->begin().blockFormat().property(BlockStyleProperty).toString().isEmpty()) return LumenDocument::empty();
+    auto canonical = LumenDocument::fromPresentation(structuredBlocks());
+    std::function<QJsonArray(const QJsonArray &)> resolve = [&](const QJsonArray &nodes) {
+        QJsonArray out;
+        for (const auto &value : nodes) {
+            auto node = value.toObject(); auto attrs = node.value("attrs").toObject();
+            if (node.value("type") == "image" && attrs.value("asset_id").toString().isEmpty()) {
+                for (const auto &entry : objects_) if (entry.toObject().value("id") == attrs.value("object_id")) {
+                    const auto properties = entry.toObject().value("properties").toObject();
+                    auto id = properties.value("image_asset_id").toString();
+                    if (id.isEmpty()) id = properties.value("asset_id").toString();
+                    if (!id.isEmpty()) { attrs["asset_id"] = id; node["attrs"] = attrs; }
+                }
+            }
+            if (node.contains("children")) node["children"] = resolve(node.value("children").toArray());
+            out.append(node);
+        }
+        return out;
+    };
+    canonical["blocks"] = resolve(canonical.value("blocks").toArray());
+    return canonical;
+}
+void RichEditor::setCanonicalDocument(const QJsonObject &value) {
+    const auto blocks = LumenDocument::toPresentation(value);
+    loadedCanonicalEmpty_ = blocks.isEmpty();
+    if (blocks.isEmpty()) { clear(); QTextCursor cursor(document()); auto format = QTextBlockFormat();
+        format.setProperty(EmptyDocumentProperty, true); cursor.setBlockFormat(format);
+        document()->clearUndoRedoStacks(); return; }
+    setStructuredBlocks(blocks);
+}
 QJsonArray RichEditor::structuredBlocks() const {
     const_cast<RichEditor *>(this)->ensureBlockIds();
     QJsonArray blocks;
@@ -1105,7 +1191,7 @@ QJsonArray RichEditor::structuredBlocks() const {
         else if (format.property(BlockStyleProperty).toString() == "math") type = "math";
         else if (format.headingLevel()) type = "heading";
         else if (block.textList()) type = block.textList()->format().style() == QTextListFormat::ListDecimal ? "numbered_list"
-            : block.textList()->format().style() == QTextListFormat::ListLowerAlpha ? "alphabetic_list" : "bullet_list";
+            : (block.textList()->format().style() == QTextListFormat::ListLowerAlpha || block.textList()->format().style() == QTextListFormat::ListUpperAlpha) ? "alphabetic_list" : (block.textList()->format().style() == QTextListFormat::ListLowerRoman || block.textList()->format().style() == QTextListFormat::ListUpperRoman) ? "roman_list" : "bullet_list";
         else if (format.leftMargin() >= 18) type = "quote";
         else if (format.property(BlockStyleProperty).toString() == "small") type = "small";
         else if (format.property(BlockStyleProperty).toString() == "todo" &&
@@ -1208,7 +1294,7 @@ QJsonArray RichEditor::structuredBlocks() const {
                             first = false;
                             for (const auto &run : child.toObject().value("runs").toArray()) runs.append(run);
                         }
-                        cellJson.insert("runs", runs); row.append(cellJson);
+                        cellJson.insert("runs", runs); cellJson.insert("blocks", children); row.append(cellJson);
                         if (r == 0) {
                             const auto alignment = cell.firstCursorPosition().blockFormat().alignment();
                             align.append(alignment.testFlag(Qt::AlignHCenter) ? "center" : alignment.testFlag(Qt::AlignRight) ? "right" :
@@ -1244,6 +1330,9 @@ QJsonArray RichEditor::structuredBlocks() const {
                 }
             } else if (const auto block = it.currentBlock(); block.isValid()) {
                 if (block.text().isEmpty() && block.blockFormat().property(LayoutBoundaryProperty).toBool()) continue;
+                if (block.text().isEmpty() && !block.textList() && !block.blockFormat().headingLevel()
+                    && block.blockFormat().property(BlockStyleProperty).toString().isEmpty()
+                    && QJsonDocument::fromJson(block.blockFormat().property(NativeBlockProperty).toByteArray()).object().value("canonical_placeholder").toBool()) continue;
                 const auto nextGroup = block.blockFormat().property(GroupBlockProperty).toString();
                 if (nextGroup != groupId) flushGroup();
                 if (!nextGroup.isEmpty()) { groupId = nextGroup; groupChildren.append(serializeBlock(block)); }
@@ -1351,6 +1440,8 @@ void RichEditor::setStructuredBlocks(const QJsonArray &blocks) {
             if (run.value("point_size").toDouble() > 0) character.setFontPointSize(run.value("point_size").toDouble());
             else if (fallbackSize > 0) character.setFontPointSize(fallbackSize);
             if (codeBlock) character.setFontFamilies({QFontDatabase::systemFont(QFontDatabase::FixedFont).family()});
+            if (run.value("color").isString()) character.setForeground(QColor(run.value("color").toString()));
+            if (run.value("highlight").isString()) character.setBackground(QColor(run.value("highlight").toString()));
             auto href = value(run, "href");
             if (href.isEmpty() && run.value("type").toString() == "image") {
                 QString id = value(run, "object_id");
@@ -1358,7 +1449,9 @@ void RichEditor::setStructuredBlocks(const QJsonArray &blocks) {
                 if (!id.isEmpty()) href = "lumen://object/" + id;
             }
             if (run.value("type").toString() == "math") {
-                insertMathAt(cursor, value(run, "latex"), run.value("display").toBool());
+                auto image = mathFormat(value(run, "latex"), run.value("display").toBool());
+                image.setProperty(NativeRunProperty, QJsonDocument(run).toJson(QJsonDocument::Compact));
+                cursor.insertImage(image);
                 continue;
             }
             if (!href.isEmpty()) {
@@ -1370,6 +1463,10 @@ void RichEditor::setStructuredBlocks(const QJsonArray &blocks) {
                 character.setToolTip("Clic para previsualizar · Ctrl+clic para abrir en pestaña");
             } else if (!storedTextColor.isEmpty()) {
                 character.setForeground(QColor(storedTextColor));
+            }
+            if (run.value("canonical_inline").toObject().value("type") == "temporal") {
+                character.setBackground(QColor(dark_ ? "#29292e" : "#eeeeef"));
+                character.setToolTip("Fecha y hora");
             }
             if (run.value("reference_icon").toBool() && !href.isEmpty()
                 && QUrl(href).scheme() == "lumen" && QUrl(href).host() == "object") {
@@ -1415,10 +1512,14 @@ void RichEditor::setStructuredBlocks(const QJsonArray &blocks) {
                 cursor.insertText(value(run, "text"), character);
             }
         }
-        if (type == "bullet_list" || type == "numbered_list" || type == "alphabetic_list") {
+        if (type == "bullet_list" || type == "numbered_list" || type == "alphabetic_list" || type == "roman_list") {
             QTextListFormat list;
             list.setStyle(type == "numbered_list" ? QTextListFormat::ListDecimal
-                : type == "alphabetic_list" ? QTextListFormat::ListLowerAlpha : QTextListFormat::ListDisc);
+                : type == "alphabetic_list" ? QTextListFormat::ListLowerAlpha : type == "roman_list" ? QTextListFormat::ListLowerRoman : QTextListFormat::ListDisc);
+            if (value(object, "list_case") == "upper") {
+                if (type == "alphabetic_list") list.setStyle(QTextListFormat::ListUpperAlpha);
+                if (type == "roman_list") list.setStyle(QTextListFormat::ListUpperRoman);
+            }
             list.setIndent(qBound(1, object.value("indent").toInt(1), 8));
             if (activeList && activeListType == type && activeList->format().indent() == list.indent())
                 activeList->add(cursor.block());
@@ -1464,14 +1565,29 @@ void RichEditor::setStructuredBlocks(const QJsonArray &blocks) {
             format.setProperty(NativeFrameProperty, QJsonDocument(object).toJson(QJsonDocument::Compact));
             format.setBorder(type == "columns" ? 0 : 1); format.setCellSpacing(type == "columns" ? 12 : 0);
             format.setCellPadding(8); format.setTopMargin(8); format.setBottomMargin(12);
-            format.setWidth(QTextLength(QTextLength::PercentageLength, 100));
+            const auto canonical = object.value("canonical_node").toObject();
+            QList<QTextLength> widths;
+            if (type == "table") {
+                qreal total = 0;
+                for (const auto &value : canonical.value("attrs").toObject().value("columns").toArray()) {
+                    const auto width = qMax(40.0, value.toObject().value("width").toDouble(160));
+                    widths.append(QTextLength(QTextLength::FixedLength, width)); total += width;
+                }
+                format.setWidth(QTextLength(QTextLength::FixedLength, total > 0 ? total : width * 160));
+            } else {
+                format.setWidth(QTextLength(QTextLength::PercentageLength, 100));
+                qreal total = 0; for (const auto &c : canonical.value("children").toArray()) total += c.toObject().value("attrs").toObject().value("width").toDouble(1);
+                for (const auto &c : canonical.value("children").toArray()) widths.append(QTextLength(QTextLength::PercentageLength,
+                    100 * c.toObject().value("attrs").toObject().value("width").toDouble(1) / qMax(1.0, total)));
+            }
+            if (!widths.isEmpty()) format.setColumnWidthConstraints(widths);
             auto *table = cursor.insertTable(type == "columns" ? 1 : qMax(1, rows.size()), width, format);
             for (int r = 0; r < table->rows(); ++r) for (int c = 0; c < table->columns(); ++c) {
                 cursor = table->cellAt(r, c).firstCursorPosition(); first = true;
                 if (type == "columns") {
                     const auto children = c < columns.size() ? columns.at(c).toArray() : QJsonArray{};
                     for (const auto &child : children) insertEntry(child.toObject());
-                    if (children.isEmpty()) insertObject(QJsonObject{{"text", ""}});
+                    if (children.isEmpty()) insertObject(QJsonObject{{"text", ""}, {"canonical_placeholder", true}});
                 } else {
                     const auto row = r < rows.size() ? rows.at(r).toArray() : QJsonArray{};
                     const auto cell = c < row.size() ? row.at(c).toObject() : QJsonObject{};
@@ -1479,7 +1595,12 @@ void RichEditor::setStructuredBlocks(const QJsonArray &blocks) {
                     const auto align = object.value("align").toArray();
                     const QString alignment = c < align.size() ? align.at(c).toString() : QString();
                     paragraph.insert("alignment", int(alignment == "center" ? Qt::AlignHCenter : alignment == "right" ? Qt::AlignRight : Qt::AlignLeft));
-                    insertObject(paragraph);
+                    const auto cellBlocks = cell.value("blocks").toArray();
+                    if (cellBlocks.isEmpty()) {
+                        if (cell.contains("blocks")) insertObject(QJsonObject{{"text", ""}, {"canonical_placeholder", true}});
+                        else insertObject(paragraph);
+                    }
+                    else for (const auto &entry : cellBlocks) insertEntry(entry.toObject());
                 }
                 activeList = nullptr; activeListType.clear();
             }
@@ -1506,14 +1627,14 @@ void RichEditor::setStructuredBlocks(const QJsonArray &blocks) {
             auto *body = cursor.insertFrame(bodyFormat);
             cursor = body->firstCursorPosition(); first = true;
             for (const auto &child : children) insertEntry(child.toObject());
-            if (children.isEmpty()) insertObject(QJsonObject{{"type", "paragraph"}, {"text", ""}});
+            if (children.isEmpty()) insertObject(QJsonObject{{"type", "paragraph"}, {"text", ""}, {"canonical_placeholder", true}});
             cursor = QTextCursor(document()); cursor.setPosition(body->lastPosition() + 1); cursor.setBlockFormat(boundary);
             cursor.setPosition(frame->lastPosition() + 1); cursor.setBlockFormat(boundary); cursor.setCharFormat(QTextCharFormat());
             first = true; lastInserted = {}; activeList = nullptr; activeListType.clear(); return;
         }
-        const bool complexGroup = type == "group" && std::any_of(children.begin(), children.end(), [](const QJsonValue &child) {
+        const bool complexGroup = type == "group" && (object.contains("canonical_node") || std::any_of(children.begin(), children.end(), [](const QJsonValue &child) {
             const auto kind = child.toObject().value("type").toString(); return kind == "table" || kind == "columns" || kind == "group" || kind == "toggle";
-        });
+        }));
         if (complexGroup) {
             if (!first) cursor.insertBlock(QTextBlockFormat(), QTextCharFormat());
             auto boundary = QTextBlockFormat(); boundary.setProperty(LayoutBoundaryProperty, true); cursor.setBlockFormat(boundary);
@@ -1521,6 +1642,7 @@ void RichEditor::setStructuredBlocks(const QJsonArray &blocks) {
             format.setPadding(12); format.setBackground(groupBoxColor(dark_));
             auto *frame = cursor.insertFrame(format); cursor = frame->firstCursorPosition(); first = true;
             for (const auto &child : children) insertEntry(child.toObject());
+            if (children.isEmpty()) insertObject(QJsonObject{{"type", "paragraph"}, {"text", ""}, {"canonical_placeholder", true}});
             cursor = QTextCursor(document()); cursor.setPosition(frame->lastPosition() + 1); cursor.setBlockFormat(boundary);
             first = true; lastInserted = {}; activeList = nullptr; activeListType.clear(); return;
         }
@@ -1574,6 +1696,9 @@ const QList<BlockAction> blockActions{
     {"Línea horizontal", "divider", "minus", "divider hr separador linea ---", false},
     {"Dos columnas", "columns", "layout-columns", "columnas cols 2col dos", false},
     {"Tabla", "table", "table", "tabla grid table matriz", false},
+    {"Fecha", "date", "calendar", "fecha date calendario", false},
+    {"Fecha y hora", "datetime", "clock", "hora time datetime rango", false},
+    {"Ahora", "now", "clock", "ahora now tiempo actual", false},
     {"Enlace web", "web", "external-link", "web link url enlace", false}
 };
 }
@@ -1648,24 +1773,21 @@ void RichEditor::insertDivider() {
 }
 
 void RichEditor::insertTableBlock(int rows, int cols) {
-    auto cursor = textCursor();
-    cursor.beginEditBlock();
-    if (cursor.positionInBlock() > 0) cursor.insertBlock();
-    QTextTableFormat tableFormat;
-    tableFormat.setAlignment(Qt::AlignLeft);
-    tableFormat.setBorder(1);
-    tableFormat.setBorderStyle(QTextFrameFormat::BorderStyle_Solid);
-    tableFormat.setBorderBrush(QColor(dark_ ? "#383840" : "#d8d8de"));
-    tableFormat.setCellSpacing(0);
-    tableFormat.setCellPadding(8);
-    tableFormat.setLeftMargin(4);
-    tableFormat.setRightMargin(4);
-    tableFormat.setTopMargin(8);
-    tableFormat.setBottomMargin(12);
-    tableFormat.setProperty(BlockStyleProperty, "table");
-    cursor.insertTable(rows, cols, tableFormat);
-    cursor.endEditBlock();
-    ensureBlockIds();
+    rows = qBound(1, rows, 1000); cols = qBound(1, cols, 64);
+    auto fresh = [] { return QUuid::createUuid().toString(QUuid::WithoutBraces); };
+    QJsonArray definitions, entries;
+    for (int c = 0; c < cols; ++c) definitions.append(QJsonObject{{"id", fresh()}, {"width", 160}});
+    for (int r = 0; r < rows; ++r) {
+        QJsonArray cells;
+        for (int c = 0; c < cols; ++c) cells.append(QJsonObject{{"id", fresh()}, {"type", "table_cell"},
+            {"children", QJsonArray{QJsonObject{{"id", fresh()}, {"type", "paragraph"}, {"content", QJsonArray()}}}}});
+        entries.append(QJsonObject{{"id", fresh()}, {"type", "table_row"}, {"children", cells}});
+    }
+    const auto currentId = blockId(textCursor().block());
+    auto node = QJsonObject{{"id", fresh()}, {"type", "table"}, {"attrs", QJsonObject{{"columns", definitions}}}, {"children", entries}};
+    auto command = QJsonObject{{"type", "insert"}, {"node", node}, {"position", canonicalDocument().value("blocks").toArray().size()}};
+    if (textCursor().block().text().isEmpty() && !currentId.isEmpty()) { command["type"] = "replace"; command["node_id"] = currentId; }
+    applyCanonicalCommands(QJsonArray{command});
 }
 
 void RichEditor::insertColumnsBlock() {
@@ -1816,6 +1938,7 @@ void RichEditor::applyBlockCharacterStyle(QTextCursor cursor, const QString &old
     }
 }
 void RichEditor::applyBlockStyle(const QString &requestedStyle) {
+    if (requestedStyle == "group") { groupSelection(); return; }
     auto *currentFrame = textCursor().currentFrame();
     const bool existingToggleHeader = currentFrame->firstCursorPosition().block() == textCursor().block()
         && QJsonDocument::fromJson(currentFrame->frameFormat().property(NativeFrameProperty).toByteArray()).object().value("type").toString() == "toggle";
@@ -1954,8 +2077,6 @@ void RichEditor::applyBlockStyle(const QString &requestedStyle) {
         format.setBottomMargin(style.startsWith("heading") ? 14 : 10);
         cursor.setBlockFormat(format);
     }
-    // A member block keeps the group box and its explicit style colors when
-    // the block type changes (Capacities groups contain typed blocks).
     {
         auto format = cursor.blockFormat();
         const QString groupId = format.property(GroupBlockProperty).toString();
@@ -2143,6 +2264,14 @@ void RichEditor::selectBlock() {
     }
     if (style == "reference" || style == "embed") showReferencePicker(style == "embed");
     else if (style == "web") showLinkEditor(bool(webEmbedRequested));
+    else if (style == "date" || style == "datetime") {
+        transaction.endEditBlock(); showTemporalPicker(style == "datetime"); return;
+    }
+    else if (style == "now") {
+        const auto now = QDateTime::currentDateTime();
+        insertTemporalReference(QJsonObject{{"kind", "datetime"}, {"start", now.toString(Qt::ISODate)},
+            {"timezone", QString::fromUtf8(QTimeZone::systemTimeZoneId())}, {"display_hint", "time"}});
+    }
     else if (style == "icon") showIconPicker();
     else if (style == "divider") insertDivider();
     else if (style == "columns") insertColumnsBlock();
@@ -2255,6 +2384,7 @@ void RichEditor::showLinkEditor(bool embed) {
     url->setFocus();
 }
 void RichEditor::updateSelectionToolbar() {
+    if (property("lumenTableSelectionActive").toBool()) { if (selectionToolbar_) selectionToolbar_->hide(); return; }
     if (!textCursor().hasSelection() || !hasFocus() || isReadOnly() || referencePopup_ || blockPopup_ || linkPopup_) {
         if (selectionToolbar_) selectionToolbar_->hide();
         return;
@@ -2308,9 +2438,6 @@ void RichEditor::updateSelectionToolbar() {
     selectionToolbar_->raise();
 }
 
-// ---------------------------------------------------------------------------
-// Find in page (Capacities parity)
-// ---------------------------------------------------------------------------
 QWidget *RichEditor::findBarHost() {
     // The editor is embedded in a QScrollArea whose viewport is what the user
     // actually sees. The bar must stay pinned to the visible pane, not scroll
@@ -2879,7 +3006,7 @@ int RichEditor::replaceFindAll(const QString &replacement) {
 
 bool RichEditor::canInsertFromMimeData(const QMimeData *source) const {
     if (!source) return false;
-    if (source->hasImage()) return true;
+    if (source->hasFormat(LumenClipboard::Mime) || source->hasImage()) return true;
     if (source->hasUrls()) {
         for (const auto &url : source->urls()) {
             if (url.isLocalFile()) {
@@ -2903,8 +3030,7 @@ void RichEditor::insertFromMimeData(const QMimeData *source) {
         ensureCursorVisible();
         return;
     }
-    // A copied block reference pastes as a chip: embedded when the block is
-    // empty, inline elsewhere (Capacities block-based linking).
+    if (!isReadOnly() && source->hasFormat(LumenClipboard::Mime)) { pasteStructuredMime(source); return; }
     if (!isReadOnly() && source->hasText() && !source->hasImage() && !source->hasUrls()) {
         const QString text = source->text().trimmed();
         if (text.startsWith("lumen://block/") && QUrl(text, QUrl::StrictMode).scheme() == "lumen"
@@ -2947,6 +3073,9 @@ void RichEditor::insertFromMimeData(const QMimeData *source) {
             return;
         }
     }
+    if (isReadOnly()) return;
+    if (source->hasHtml()) { pasteNormalizedHtml(source->html()); return; }
+    if (source->hasText()) { pastePlainText(source->text()); return; }
     QTextEdit::insertFromMimeData(source);
 }
 bool RichEditor::handleReferenceDeletion(QKeyEvent *event) {
@@ -3205,11 +3334,58 @@ void RichEditor::keyPressEvent(QKeyEvent *event) {
         return;
     }
     if (isReadOnly()) { QTextEdit::keyPressEvent(event); return; }
+    if (event->key() == Qt::Key_V && event->modifiers() == (Qt::ControlModifier | Qt::ShiftModifier)) {
+        pastePlainText(QGuiApplication::clipboard()->text()); return;
+    }
+    const auto nativeInline = QJsonDocument::fromJson(textCursor().charFormat().property(NativeRunProperty).toByteArray()).object().value("canonical_inline").toObject();
+    const bool plainTyping = !event->text().isEmpty() && !(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier));
+    if (!textCursor().hasSelection() && nativeInline.value("type") == "temporal"
+        && (plainTyping || event->key() == Qt::Key_Backspace || event->key() == Qt::Key_Delete)) {
+        for (auto it = textCursor().block().begin(); !it.atEnd(); ++it) {
+            const auto fragment = it.fragment();
+            if (textCursor().position() < fragment.position() || textCursor().position() > fragment.position() + fragment.length()) continue;
+            const auto in = QJsonDocument::fromJson(fragment.charFormat().property(NativeRunProperty).toByteArray()).object().value("canonical_inline").toObject();
+            if (in.value("type") != "temporal") continue;
+            auto after = textCursor(); after.beginEditBlock(); after.setPosition(fragment.position() + fragment.length());
+            if (event->key() == Qt::Key_Backspace || event->key() == Qt::Key_Delete) {
+                after.setPosition(fragment.position(), QTextCursor::KeepAnchor); after.removeSelectedText();
+                setTextCursor(after); setCurrentCharFormat(QTextCharFormat());
+            } else { setTextCursor(after); setCurrentCharFormat(QTextCharFormat()); QTextEdit::keyPressEvent(event); }
+            after.endEditBlock(); return;
+        }
+    }
+    const auto nativeNode = QJsonDocument::fromJson(textCursor().blockFormat().property(NativeBlockProperty).toByteArray()).object().value("canonical_node").toObject();
+    if ((nativeNode.value("type") == "image" || nativeNode.value("type") == "math"
+         || textCursor().blockFormat().property(BlockStyleProperty).toString() == "math") && !textCursor().hasSelection()
+        && ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+            || (!event->text().isEmpty() && !(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))))) {
+        auto after = textCursor(); after.beginEditBlock(); after.movePosition(QTextCursor::EndOfBlock);
+        after.insertBlock(QTextBlockFormat(), QTextCharFormat()); setTextCursor(after);
+        if (event->key() != Qt::Key_Return && event->key() != Qt::Key_Enter) QTextEdit::keyPressEvent(event);
+        after.endEditBlock(); ensureBlockIds(); return;
+    }
     if (handleInlineKey(event)) return;
     if (event->key() == Qt::Key_Escape && findBarVisible()) { closeFindBar(); return; }
     if (handleReferenceDeletion(event)) return;
     if (handleReferenceNavigation(event)) return;
     if (handleCodeKey(event)) return;
+    if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) && event->modifiers() == Qt::ControlModifier) {
+        if (auto *table = textCursor().currentTable()) {
+            auto after = QTextCursor(document()); after.setPosition(table->lastPosition() + 1);
+            setTextCursor(after); insertTableBlock(); return;
+        }
+    }
+    if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) && event->modifiers() == Qt::NoModifier) {
+        if (auto *table = textCursor().currentTable()) {
+            const auto node = QJsonDocument::fromJson(table->format().property(NativeFrameProperty).toByteArray()).object().value("canonical_node").toObject();
+            if (node.value("type") == "table") {
+                auto after = QTextCursor(document()); after.beginEditBlock(); after.setPosition(table->lastPosition() + 1);
+                if (!after.block().text().isEmpty()) after.insertBlock(QTextBlockFormat(), QTextCharFormat());
+                after.setBlockFormat(QTextBlockFormat()); after.setBlockCharFormat(QTextCharFormat()); after.setCharFormat(QTextCharFormat());
+                after.endEditBlock(); setTextCursor(after); ensureBlockIds(); return;
+            }
+        }
+    }
     if (handleMarkupShortcut(event)) return;
     if (handleMarkdownPrefix(event)) return;
     if (handleInlineMarkdown(event)) return;
@@ -3365,6 +3541,9 @@ void RichEditor::keyPressEvent(QKeyEvent *event) {
     }
 
     const auto prefix = cursor.block().text().left(cursor.positionInBlock());
+    if (event->text() == "(" && prefix.endsWith('(') && blockSearchRequested) {
+        QTextEdit::keyPressEvent(event); showBlockReferencePicker(); return;
+    }
     if (event->key() == Qt::Key_K && event->modifiers() == Qt::ControlModifier && cursor.hasSelection()) { showLinkEditor(); return; }
     if (event->key() == Qt::Key_Slash && event->modifiers() == (Qt::ControlModifier | Qt::ShiftModifier)) { showBlockMenu(); return; }
     if (event->key() == Qt::Key_D && (event->modifiers() == Qt::ControlModifier) && !cursor.hasSelection()) {
@@ -3372,7 +3551,6 @@ void RichEditor::keyPressEvent(QKeyEvent *event) {
         return;
     }
     if (event->key() == Qt::Key_G && (event->modifiers() == Qt::ControlModifier)) {
-        // Capacities: Cmd/Ctrl+G groups the selected blocks into one group.
         groupSelection();
         return;
     }
@@ -3387,7 +3565,22 @@ void RichEditor::keyPressEvent(QKeyEvent *event) {
     ensureBlockIds();
 }
 void RichEditor::mouseReleaseEvent(QMouseEvent *event) {
+    if (resizingTable_ && event->button() == Qt::LeftButton) {
+        resizeTransaction_.endEditBlock(); resizingTable_.clear(); resizingColumn_ = -1;
+        viewport()->setCursor(Qt::IBeamCursor); event->accept(); return;
+    }
     if (event->button() == Qt::LeftButton && !isReadOnly() && !textCursor().hasSelection()) {
+        auto hit = cursorForPosition(event->position().toPoint());
+        for (auto it = hit.block().begin(); !it.atEnd(); ++it) {
+            const auto fragment = it.fragment();
+            if (hit.position() < fragment.position() || hit.position() >= fragment.position() + fragment.length()) continue;
+            const auto original = QJsonDocument::fromJson(fragment.charFormat().property(NativeRunProperty).toByteArray()).object().value("canonical_inline").toObject();
+            if (original.value("type") == "temporal") {
+                auto chip = QTextCursor(document()); chip.setPosition(fragment.position());
+                chip.setPosition(fragment.position() + fragment.length(), QTextCursor::KeepAnchor);
+                showTemporalPicker(false, chip); event->accept(); return;
+            }
+        }
         const auto math = mathCursorAt(event->position().toPoint());
         if (math.hasSelection()) { editMathAt(math); event->accept(); return; }
     }
@@ -3431,9 +3624,14 @@ void RichEditor::mouseReleaseEvent(QMouseEvent *event) {
     }
     const QUrl url(href);
     if (!url.isEmpty() && (event->button() == Qt::LeftButton) && (
-        (url.scheme() == "lumen" && url.host() == "object") || isReadOnly() || (event->modifiers() & Qt::ControlModifier))) {
+        (url.scheme() == "lumen" && (url.host() == "object" || url.host() == "block")) || isReadOnly() || (event->modifiers() & Qt::ControlModifier))) {
         if (url.scheme() == "lumen" && url.host() == "object" && openReference)
             openReference(url.path().mid(1));
+        else if (url.scheme() == "lumen" && url.host() == "block" && openReference) {
+            const auto objectId = QUrlQuery(url).queryItemValue("object_id");
+            if (!objectId.isEmpty()) openReference(objectId);
+            else if (!url.path().mid(1).isEmpty()) focusBlock(url.path().mid(1));
+        }
         else if ((url.scheme() == "https" || url.scheme() == "http") && url.userInfo().isEmpty()) QDesktopServices::openUrl(url);
         event->accept();
         return;
@@ -3441,7 +3639,99 @@ void RichEditor::mouseReleaseEvent(QMouseEvent *event) {
     QTextEdit::mouseReleaseEvent(event);
     updateInlineQuery();
 }
+int RichEditor::tableResizeColumnAt(const QPoint &point, QTextTable **hit) const {
+    int column = -1;
+    std::function<void(QTextFrame *)> visit = [&](QTextFrame *frame) {
+        if (auto *table = qobject_cast<QTextTable *>(frame)) {
+            const auto node = QJsonDocument::fromJson(table->format().property(NativeFrameProperty).toByteArray()).object().value("canonical_node").toObject();
+            if (node.value("type") == "table") {
+                const auto rect = document()->documentLayout()->frameBoundingRect(table).translated(-horizontalScrollBar()->value(), -verticalScrollBar()->value());
+                if (point.y() >= rect.top() && point.y() <= rect.bottom()) {
+                    const auto definitions = node.value("attrs").toObject().value("columns").toArray();
+                    qreal total = 0, before = 0; for (const auto &v : definitions) total += v.toObject().value("width").toDouble(160);
+                    for (int c = 0; c < definitions.size(); ++c) {
+                        before += definitions[c].toObject().value("width").toDouble(160);
+                        const auto edge = rect.left() + rect.width() * before / qMax(1.0, total);
+                        if (qAbs(point.x() - edge) <= 5) { column = c; if (hit) *hit = table; }
+                    }
+                }
+            }
+        }
+        for (auto *child : frame->childFrames()) visit(child);
+    };
+    visit(document()->rootFrame()); return column;
+}
+void RichEditor::mousePressEvent(QMouseEvent *event) {
+    QTextTable *table = nullptr;
+    const int column = !isReadOnly() && event->button() == Qt::LeftButton ? tableResizeColumnAt(event->position().toPoint(), &table) : -1;
+    if (column >= 0 && table) {
+        resizingTable_ = table; resizingColumn_ = column; resizingStartX_ = event->position().x();
+        const auto node = QJsonDocument::fromJson(table->format().property(NativeFrameProperty).toByteArray()).object().value("canonical_node").toObject();
+        resizingStartWidth_ = node.value("attrs").toObject().value("columns").toArray()[column].toObject().value("width").toDouble(160);
+        resizeTransaction_ = table->firstCursorPosition(); resizeTransaction_.beginEditBlock();
+        viewport()->setCursor(Qt::SizeHorCursor); event->accept(); return;
+    }
+    QTextEdit::mousePressEvent(event);
+}
+void RichEditor::contextMenuEvent(QContextMenuEvent *event) {
+    auto *menu = createStandardContextMenu();
+    const auto cursor = cursorForPosition(event->pos());
+    auto *table = cursor.currentTable();
+    if (table && !isReadOnly()) {
+        const auto metadata = QJsonDocument::fromJson(table->format().property(NativeFrameProperty).toByteArray()).object();
+        const auto canonical = metadata.value("canonical_node").toObject();
+        const auto identity = canonical.value("id").toString();
+        const auto kind = canonical.value("type").toString();
+        if (!identity.isEmpty()) {
+            menu->addSeparator();
+            if (kind == "columns") {
+                menu->addAction("Pasar a una columna", this, [this, identity] {
+                    applyCanonicalCommands(QJsonArray{QJsonObject{{"type", "flatten_columns"}, {"node_id", identity}}});
+                });
+            } else if (kind == "table") {
+                const auto cell = table->cellAt(cursor); const int col = cell.column(), row = cell.row();
+                const auto definitions = canonical.value("attrs").toObject().value("columns").toArray();
+                const auto rows = canonical.value("children").toArray();
+                if (col < definitions.size() && row < rows.size()) {
+                    const auto columnID = definitions[col].toObject().value("id").toString();
+                    const auto rowID = rows[row].toObject().value("id").toString();
+                    auto run = [this, identity](QJsonObject command) { command["node_id"] = identity; QString error;
+                        if (!applyCanonicalCommands(QJsonArray{command}, &error)) QToolTip::showText(QCursor::pos(), error, this); };
+                    menu->addAction("Seleccionar columna", this, [this, table, col] { auto selection=table->cellAt(0,col).firstCursorPosition(); selection.setPosition(table->cellAt(table->rows()-1,col).lastCursorPosition().position(),QTextCursor::KeepAnchor);setTextCursor(selection); });
+                    menu->addAction("Seleccionar fila", this, [this, table, row] { auto selection=table->cellAt(row,0).firstCursorPosition(); selection.setPosition(table->cellAt(row,table->columns()-1).lastCursorPosition().position(),QTextCursor::KeepAnchor);setTextCursor(selection); });
+                    menu->addAction("Insertar columna antes", this, [run,col]{run({{"type","table_insert_column"},{"position",col},{"column_id",QUuid::createUuid().toString(QUuid::WithoutBraces)},{"width",160}});});
+                    menu->addAction("Insertar columna después", this, [run,col]{run({{"type","table_insert_column"},{"position",col+1},{"column_id",QUuid::createUuid().toString(QUuid::WithoutBraces)},{"width",160}});});
+                    menu->addAction("Restablecer ancho", this, [run,columnID]{run({{"type","table_set_width"},{"column_id",columnID},{"width",160}});});
+                    if(col>0)menu->addAction("Mover columna a la izquierda", this, [run,columnID,col]{run({{"type","table_move_column"},{"column_id",columnID},{"position",col-1}});});
+                    if(col+1<definitions.size())menu->addAction("Mover columna a la derecha", this, [run,columnID,col]{run({{"type","table_move_column"},{"column_id",columnID},{"position",col+1}});});
+                    if(row>0)menu->addAction("Mover fila arriba", this, [run,rowID,row]{run({{"type","table_move_row"},{"parent_id",rowID},{"position",row-1}});});
+                    if(row+1<rows.size())menu->addAction("Mover fila abajo", this, [run,rowID,row]{run({{"type","table_move_row"},{"parent_id",rowID},{"position",row+1}});});
+                    menu->addAction("Ordenar ascendente", this, [run,columnID]{run({{"type","table_sort"},{"column_id",columnID},{"direction","asc"}});});
+                    menu->addAction("Ordenar descendente", this, [run,columnID]{run({{"type","table_sort"},{"column_id",columnID},{"direction","desc"}});});
+                    menu->addAction("Eliminar columna", this, [run,columnID]{run({{"type","table_delete_column"},{"column_id",columnID}});});
+                    menu->addAction("Eliminar fila", this, [run,rowID]{run({{"type","table_delete_row"},{"parent_id",rowID}});});
+                }
+            }
+        }
+    }
+    menu->exec(event->globalPos()); delete menu;
+}
 void RichEditor::mouseMoveEvent(QMouseEvent *event) {
+    if (resizingTable_ && resizingColumn_ >= 0) {
+        auto format = resizingTable_->format();
+        auto metadata = QJsonDocument::fromJson(format.property(NativeFrameProperty).toByteArray()).object();
+        auto node = metadata.value("canonical_node").toObject(); auto attrs = node.value("attrs").toObject();
+        auto definitions = attrs.value("columns").toArray();
+        auto definition = definitions[resizingColumn_].toObject();
+        definition["width"] = qMax(40.0, resizingStartWidth_ + event->position().x() - resizingStartX_); definitions[resizingColumn_] = definition;
+        attrs["columns"] = definitions; node["attrs"] = attrs; metadata["canonical_node"] = node;
+        format.setProperty(NativeFrameProperty, QJsonDocument(metadata).toJson(QJsonDocument::Compact));
+        QList<QTextLength> widths; qreal total = 0;
+        for (const auto &v : definitions) { const auto width = v.toObject().value("width").toDouble(160); widths.append(QTextLength(QTextLength::FixedLength, width)); total += width; }
+        format.setColumnWidthConstraints(widths); format.setWidth(QTextLength(QTextLength::FixedLength, total));
+        resizingTable_->setFormat(format); viewport()->setCursor(Qt::SizeHorCursor); event->accept(); return;
+    }
+    if (!isReadOnly() && tableResizeColumnAt(event->position().toPoint()) >= 0) { viewport()->setCursor(Qt::SizeHorCursor); return; }
     if (!isReadOnly()) {
         const QPoint pos = event->position().toPoint();
         const auto blk = blockAtViewportPoint(pos);
@@ -3695,6 +3985,19 @@ void RichEditor::dragLeaveEvent(QDragLeaveEvent *event) {
 // divisor, fórmulas, enlaces, negritas) y pertenencia a listas.
 void RichEditor::performBlockMove(const QTextBlock &source, const QTextBlock &target, DropMode mode) {
     if (!source.isValid() || !target.isValid()) return;
+    const auto sourceNative = QJsonDocument::fromJson(source.blockFormat().property(NativeBlockProperty).toByteArray()).object();
+    if (sourceNative.contains("canonical_node") && (mode == DropBefore || mode == DropAfter)) {
+        const auto blocks = canonicalDocument().value("blocks").toArray();
+        const auto sourceLocation = canonicalLocation(blocks, blockId(source));
+        const auto targetLocation = canonicalLocation(blocks, blockId(target));
+        if (!sourceLocation.isEmpty() && !targetLocation.isEmpty() && source != target) {
+            int position = targetLocation.value("position").toInt() + (mode == DropAfter ? 1 : 0);
+            if (sourceLocation.value("parent_id") == targetLocation.value("parent_id") && sourceLocation.value("position").toInt() < position) --position;
+            applyCanonicalCommands(QJsonArray{QJsonObject{{"type", "move"}, {"node_id", blockId(source)},
+                {"parent_id", targetLocation.value("parent_id")}, {"position", position}}});
+        }
+        return;
+    }
     if (mode != DropBefore && mode != DropAfter) return;
     if (source == target) return;
     auto *sourceFrame = QTextCursor(source).currentFrame();
@@ -3841,7 +4144,29 @@ void RichEditor::dropEvent(QDropEvent *event) {
             QTextCursor docCur(document());
             docCur.beginEditBlock();
 
-            if (dropMode_ == DropSideColumn) {
+            if (dropMode_ == DropSideColumn && draggedBlock_.isValid()
+                && QJsonDocument::fromJson(draggedBlock_.blockFormat().property(NativeBlockProperty).toByteArray()).object().contains("canonical_node")) {
+                docCur.endEditBlock();
+                const auto blocks = canonicalDocument().value("blocks").toArray();
+                const auto source = canonicalLocation(blocks, blockId(draggedBlock_));
+                const auto target = canonicalLocation(blocks, blockId(dropTargetBlock_));
+                const auto sourceNode = source.value("node").toObject(), targetNode = target.value("node").toObject();
+                if (!source.isEmpty() && !target.isEmpty() && sourceNode.value("id") != targetNode.value("id")
+                    && canonicalLocation(sourceNode.value("children").toArray(), targetNode.value("id").toString()).isEmpty()
+                    && canonicalLocation(targetNode.value("children").toArray(), sourceNode.value("id").toString()).isEmpty()) {
+                    auto fresh = [] { return QUuid::createUuid().toString(QUuid::WithoutBraces); };
+                    QJsonArray columnNodes;
+                    columnNodes.append(QJsonObject{{"id", fresh()}, {"type", "column"}, {"attrs", QJsonObject{{"width", 1}}}, {"children", QJsonArray{targetNode}}});
+                    columnNodes.append(QJsonObject{{"id", fresh()}, {"type", "column"}, {"attrs", QJsonObject{{"width", 1}}}, {"children", QJsonArray{sourceNode}}});
+                    const auto columns = QJsonObject{{"id", fresh()}, {"type", "columns"}, {"children", columnNodes}};
+                    int position = target.value("position").toInt();
+                    if (source.value("parent_id") == target.value("parent_id") && source.value("position").toInt() < position) --position;
+                    applyCanonicalCommands(QJsonArray{
+                        QJsonObject{{"type", "delete"}, {"node_ids", QJsonArray{sourceNode.value("id"), targetNode.value("id")}}},
+                        QJsonObject{{"type", "insert"}, {"parent_id", target.value("parent_id")}, {"position", position}, {"node", columns}}});
+                }
+                dropIndicatorRect_ = QRect(); dropMode_ = DropNone; viewport()->update(); event->acceptProposedAction(); return;
+            } else if (dropMode_ == DropSideColumn) {
                 // Remove source block if valid in this document
                 if (draggedBlock_.isValid()) {
                     QTextCursor delCur(draggedBlock_);
@@ -3992,6 +4317,7 @@ void RichEditor::showBlockActionMenu(const QTextBlock &block, const QPoint &glob
     if (isReadOnly() || !block.isValid()) return;
     QMenu menu(this);
     menu.setObjectName("blockActionMenu");
+    menu.addAction("Seleccionar bloque y descendientes", this, [this, identity = blockId(block)] { selectCanonicalBlock(identity); });
 
     const QString bg = dark_ ? "#1c1c20" : "#ffffff";
     const QString fg = dark_ ? "#e4e3e2" : "#1f1f23";
@@ -4015,9 +4341,6 @@ void RichEditor::showBlockActionMenu(const QTextBlock &block, const QPoint &glob
     const bool isToggle = currentStyle == "toggle" || block.text().startsWith("▶ ") || block.text().startsWith("▼ ");
     const bool isGroup = currentStyle == "group";
 
-    // 1. "Turn into": one submenu with the Capacities text-block interfaces
-    //    in reference order — hierarchy, lists, to-do, quote, toggle, code and
-    //    math. Same applyBlockStyle behavior as the old top-level items.
     auto *turnIntoMenu = menu.addMenu(LumenIcons::icon("typography", QColor(dark_ ? "#9ca3af" : "#6b7280"), 18), "Turn into");
     turnIntoMenu->setStyleSheet(menu.styleSheet());
     auto addTurnInto = [this, turnIntoMenu, &block](const QString &title, const QString &iconName, const QString &style, bool checked) {
@@ -4083,14 +4406,11 @@ void RichEditor::showBlockActionMenu(const QTextBlock &block, const QPoint &glob
         setBlockStyleColors(block, QString(), QString());
     });
 
-    // 3. "Icon...": the emoji picker, reachable from the handle menu
-    //    (Capacities emoji interface).
     menu.addAction(LumenIcons::icon("mood-smile", QColor(dark_ ? "#9ca3af" : "#6b7280"), 18), "Icon...", [this, block] {
         setTextCursor(QTextCursor(block));
         showIconPicker();
     });
 
-    // 4. Group / Ungroup (Capacities: Cmd/Ctrl+G or "group" in this menu).
     if (blockInGroup(block)) {
         menu.addAction(LumenIcons::icon("square", QColor(dark_ ? "#9ca3af" : "#6b7280"), 18), "Ungroup", [this, block] {
             ungroupBlock(block);
@@ -4165,8 +4485,6 @@ void RichEditor::showBlockActionMenu(const QTextBlock &block, const QPoint &glob
     copyMenu->addAction("Copiar bloque", [block] {
         QGuiApplication::clipboard()->setText(block.text());
     });
-    // Capacities: Copy > Copy block reference, on every block including
-    // reference/object blocks.
     copyMenu->addSeparator();
     copyMenu->addAction(LumenIcons::icon("link", QColor(dark_ ? "#9ca3af" : "#6b7280"), 16), "Copy block reference", [this, block] {
         copyBlockReference(block);
@@ -4225,6 +4543,12 @@ void RichEditor::convertBlockToObject(const QTextBlock &block, const QString &ty
 
 void RichEditor::duplicateBlock(const QTextBlock &block) {
     if (!block.isValid()) return;
+    const auto blocks = canonicalDocument().value("blocks").toArray();
+    const auto location = canonicalLocation(blocks, blockId(block));
+    if (!location.isEmpty()) {
+        applyCanonicalCommands(QJsonArray{QJsonObject{{"type", "copy"}, {"node_id", blockId(block)},
+            {"parent_id", location.value("parent_id")}, {"position", location.value("position").toInt() + 1}}}); return;
+    }
     auto *frame = QTextCursor(block).currentFrame();
     const auto kind = QJsonDocument::fromJson(frame->frameFormat().property(NativeFrameProperty).toByteArray()).object().value("type").toString();
     if (kind == "toggle" && block == frame->firstCursorPosition().block()) {
@@ -4290,6 +4614,9 @@ void RichEditor::duplicateBlock(const QTextBlock &block) {
 
 void RichEditor::deleteBlock(const QTextBlock &block) {
     if (!block.isValid()) return;
+    if (QJsonDocument::fromJson(block.blockFormat().property(NativeBlockProperty).toByteArray()).object().contains("canonical_node")) {
+        applyCanonicalCommands(QJsonArray{QJsonObject{{"type", "delete"}, {"node_id", blockId(block)}}}); return;
+    }
     auto *frame = QTextCursor(block).currentFrame();
     const auto kind = QJsonDocument::fromJson(frame->frameFormat().property(NativeFrameProperty).toByteArray()).object().value("type").toString();
     if (kind == "toggle" && block == frame->firstCursorPosition().block()) {
@@ -4330,11 +4657,6 @@ void RichEditor::deleteBlock(const QTextBlock &block) {
     ensureBlockIds();
 }
 
-// ------------------------------------------------------------- handle parity
-// Groups the blocks touched by the current selection into one group box
-// (Capacities: Cmd/Ctrl+G or "group" in the six-dots menu). A selection
-// inside one block, or no selection at all, keeps today's behavior: the block
-// itself becomes a group-styled block.
 void RichEditor::groupSelection() {
     if (isReadOnly()) return;
     auto cursor = textCursor();
@@ -4347,8 +4669,45 @@ void RichEditor::groupSelection() {
         // block in: only blocks with at least one selected character group.
         last = document()->findBlock(qMax(start, end - 1));
     }
-    if (!first.isValid() || !last.isValid() || !(first < last)) {
-        applyBlockStyle("group");
+    const bool single = !first.isValid() || !last.isValid() || !(first < last);
+    bool canonicalSelection = single;
+    if (!single) for (auto block = first; block.isValid(); block = block.next()) {
+        if (QJsonDocument::fromJson(block.blockFormat().property(NativeBlockProperty).toByteArray()).object().contains("canonical_node")) canonicalSelection = true;
+        if (block == last) break;
+    }
+    if (canonicalSelection) {
+        const auto doc = canonicalDocument(); const auto nodes = doc.value("blocks").toArray();
+        QSet<QString> selected;
+        if (single) selected.insert(blockId(cursor.block()));
+        else {
+            for (auto block = first; block.isValid(); block = block.next()) {
+                if (!canonicalLocation(nodes, blockId(block)).isEmpty()) selected.insert(blockId(block));
+                if (block == last) break;
+            }
+            std::function<void(QTextFrame *)> frames = [&](QTextFrame *frame) {
+                if (cursor.selectionStart() <= frame->firstPosition() - 1 && cursor.selectionEnd() >= frame->lastPosition() + 1) {
+                    const auto node = QJsonDocument::fromJson(frame->frameFormat().property(NativeFrameProperty).toByteArray()).object().value("canonical_node").toObject();
+                    if (!node.isEmpty()) selected.insert(node.value("id").toString());
+                }
+                for (auto *child : frame->childFrames()) frames(child);
+            }; frames(document()->rootFrame());
+        }
+        QJsonArray roots;
+        std::function<void(const QJsonArray &)> gather = [&](const QJsonArray &values) {
+            for (const auto &v : values) { const auto n = v.toObject(); if (selected.contains(n.value("id").toString())) roots.append(n.value("id")); else gather(n.value("children").toArray()); }
+        }; gather(nodes);
+        const auto group = QJsonObject{{"id", QUuid::createUuid().toString(QUuid::WithoutBraces)}, {"type", "group"}, {"children", QJsonArray()}};
+        if (roots.isEmpty()) { if (nodes.isEmpty()) applyCanonicalCommands(QJsonArray{QJsonObject{{"type", "insert"}, {"node", group}, {"position", 0}}}); return; }
+        const auto where = canonicalLocation(nodes, roots.first().toString()); const auto parent = where.value("parent_id").toString();
+        if (canonicalLocation(nodes, parent).value("node").toObject().value("type") == "table_cell") return;
+        for (const auto &id : roots) if (canonicalLocation(nodes, id.toString()).value("parent_id").toString() != parent) {
+            QToolTip::showText(QCursor::pos(), "Selecciona bloques del mismo nivel para agrupar", this); return;
+        }
+        auto wrapper = group; QJsonArray children;
+        for (const auto &id : roots) children.append(canonicalLocation(nodes, id.toString()).value("node"));
+        wrapper["children"] = children;
+        applyCanonicalCommands(QJsonArray{QJsonObject{{"type", "delete"}, {"node_ids", roots}},
+            QJsonObject{{"type", "insert"}, {"node", wrapper}, {"parent_id", parent}, {"position", where.value("position")}}});
         return;
     }
     const QString groupId = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -4375,6 +4734,10 @@ void RichEditor::groupSelection() {
 
 void RichEditor::ungroupBlock(const QTextBlock &block) {
     if (isReadOnly() || !block.isValid()) return;
+    for (auto *frame = QTextCursor(block).currentFrame(); frame && frame != document()->rootFrame(); frame = frame->parentFrame()) {
+        const auto node = QJsonDocument::fromJson(frame->frameFormat().property(NativeFrameProperty).toByteArray()).object().value("canonical_node").toObject();
+        if (node.value("type") == "group") { applyCanonicalCommands(QJsonArray{QJsonObject{{"type", "unwrap"}, {"node_id", node.value("id")}}}); return; }
+    }
     const QString groupId = block.blockFormat().property(GroupBlockProperty).toString();
     if (groupId.isEmpty()) {
         // Legacy single-block group: ungrouping returns it to a paragraph.
@@ -4402,13 +4765,17 @@ void RichEditor::ungroupBlock(const QTextBlock &block) {
 
 bool RichEditor::blockInGroup(const QTextBlock &block) const {
     if (!block.isValid()) return false;
+    for (auto *frame = QTextCursor(block).currentFrame(); frame && frame != document()->rootFrame(); frame = frame->parentFrame())
+        if (QJsonDocument::fromJson(frame->frameFormat().property(NativeFrameProperty).toByteArray()).object().value("canonical_node").toObject().value("type") == "group") return true;
     return !block.blockFormat().property(GroupBlockProperty).toString().isEmpty()
         || block.blockFormat().property(BlockStyleProperty).toString() == "group";
 }
 
 void RichEditor::copyBlockReference(const QTextBlock &block) {
-    if (!block.isValid()) return;
-    QGuiApplication::clipboard()->setText("lumen://block/" + blockId(block));
+    if (!block.isValid() || documentObjectId_.isEmpty()) return;
+    QUrl url("lumen://block/" + blockId(block)); QUrlQuery query;
+    query.addQueryItem("object_id", documentObjectId_); url.setQuery(query);
+    QGuiApplication::clipboard()->setText(url.toString(QUrl::FullyEncoded));
 }
 
 QTextBlock RichEditor::findBlockById(const QString &id) const {
@@ -4419,45 +4786,22 @@ QTextBlock RichEditor::findBlockById(const QString &id) const {
 }
 
 void RichEditor::insertBlockReferencePaste(const QString &url) {
-    const QUrl parsed(url);
-    const QString id = parsed.path().mid(1);
-    if (id.isEmpty() || id.contains('/')) return;
-    // Same-document references render the referenced block's text; elsewhere
-    // the chip keeps the URL until the backend resolves block ids.
-    const QTextBlock target = findBlockById(id);
-    QString display = target.isValid() ? target.text() : url;
-    display.replace(QChar::ObjectReplacementCharacter, QString());
-    display = display.simplified();
-    if (display.size() > 120) display = display.left(117) + "…";
-    if (display.isEmpty()) display = url;
-    auto cursor = textCursor();
-    cursor.beginEditBlock();
-    if (cursor.block().text().isEmpty() && cursor.block().blockFormat().property(BlockStyleProperty).toString() != "code") {
-        // Pasting into an empty block embeds the reference (Capacities:
-        // "pasting a block reference into an empty block creates an embedded
-        // view of that block").
-        auto format = cursor.blockFormat();
-        format.setProperty(EmbedBlockProperty, true);
-        format.setHeadingLevel(0);
-        format.setLeftMargin(18);
-        format.setRightMargin(12);
-        format.setTopMargin(10);
-        format.setBottomMargin(12);
-        format.setBackground(QColor(dark_ ? "#1c1c20" : "#f4f4f5"));
-        cursor.setBlockFormat(format);
-        cursor.insertText(display, blockReferenceChipFormat(id, dark_));
-        cursor.insertText(" ", QTextCharFormat());
-        auto after = cursor;
-        after.insertBlock(QTextBlockFormat(), QTextCharFormat());
-        cursor.endEditBlock();
-        setTextCursor(after);
-    } else {
-        cursor.insertText(display, blockReferenceChipFormat(id, dark_));
-        cursor.insertText(" ", QTextCharFormat());
-        cursor.endEditBlock();
-        setTextCursor(cursor);
+    const QUrl parsed(url); const auto identity = parsed.path().mid(1);
+    if (identity.isEmpty() || identity.contains('/')) return;
+    const auto owner = QUrlQuery(parsed).queryItemValue("object_id");
+    const auto insertion = textCursor(); const auto generation = contentGeneration_;
+    if (blockResolveRequested) {
+        QPointer<RichEditor> guard(this);
+        blockResolveRequested(identity, owner, [guard, insertion, generation](QJsonObject hit) {
+            if (!guard || hit.isEmpty() || guard->contentGeneration_ != generation || insertion.document() != guard->document()) return;
+            guard->setTextCursor(insertion); guard->insertBlockReference(hit, insertion.block().text().isEmpty());
+        }); return;
     }
-    ensureBlockIds();
+    const auto target = findBlockById(identity);
+    const auto sourceOwner = !owner.isEmpty() ? owner : (target.isValid() ? documentObjectId_ : QString());
+    if (sourceOwner.isEmpty()) { textCursor().insertText(url, QTextCharFormat()); return; }
+    insertBlockReference(QJsonObject{{"object_id", sourceOwner}, {"block", QJsonObject{{"id", identity},
+        {"text", target.isValid() ? target.text() : url}}}}, insertion.block().text().isEmpty());
 }
 
 void RichEditor::setBlockStyleColors(const QTextBlock &block, const QString &textColor, const QString &backgroundColor) {
@@ -4593,7 +4937,7 @@ void RichEditor::setCodeLanguage(const QString &language) {
     if (isReadOnly() || block.blockFormat().property(BlockStyleProperty).toString() != "code") return;
     QTextCursor cursor(block);
     styleCodeBlock(cursor, LumenSyntax::normalize(language));
-    updateCodeBar();
+    updateCodeBar(); updateImageBar();
 }
 void RichEditor::updateCodeBar() {
     const auto block = textCursor().block();
@@ -4757,7 +5101,7 @@ bool RichEditor::handleCodeKey(QKeyEvent *event) {
 QTextImageFormat RichEditor::mathFormat(const QString &latex, bool display) const {
     const int pixel = QFontInfo(font()).pixelSize() > 0 ? QFontInfo(font()).pixelSize() : 16;
     const QColor color(dark_ ? "#e4e3e2" : "#303034");
-    const auto result = LumenMath::render(latex, pixel, color, display);
+    const auto result = LumenMath::render(latex, pixel, color, display, qMax<qreal>(2, devicePixelRatioF() * 2));
     const auto key = QCryptographicHash::hash(QString(latex + (display ? "|d|" : "|i|") + QString::number(pixel)).toUtf8(),
                                               QCryptographicHash::Sha1).toHex();
     const QUrl resource("lumen-math://m/" + QString::fromLatin1(key));
@@ -4872,8 +5216,8 @@ void RichEditor::editMathAt(QTextCursor target) {
     layout->addWidget(input); layout->addWidget(preview); layout->addWidget(hint);
     const int pixel = QFontInfo(font()).pixelSize() > 0 ? QFontInfo(font()).pixelSize() : 16;
     const QColor color(dark_ ? "#e4e3e2" : "#303034");
-    auto refresh = [=] {
-        const auto result = LumenMath::render(input->text(), pixel, color, display);
+    auto refresh = [=, this] {
+        const auto result = LumenMath::render(input->text(), pixel, color, display, qMax<qreal>(2, devicePixelRatioF() * 2));
         preview->setPixmap(QPixmap::fromImage(result.image));
         hint->setText(result.ok ? QString("Enter aplica · Esc cancela · vacío elimina la fórmula") : "Revisa la fórmula: " + result.error);
     };

@@ -14,20 +14,20 @@ func TestScenarioCollectionQueryExportJourney(t *testing.T) {
 	tag := scenarioTag(t, app, "favourite")
 
 	book1 := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "book", "title": "Book one", "content": "Book one notes",
+		"type_id": "book", "title": "Book one", "document": documentFixture("Book one notes"),
 		"properties": map[string]any{
 			"author": "Ada", "rating": 5, "tags": []string{tag.ID}, "aliases": []string{"B1"},
 		},
 	}))
 	book2 := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "book", "title": "Book two", "content": "Book two notes",
+		"type_id": "book", "title": "Book two", "document": documentFixture("Book two notes"),
 		"properties": map[string]any{"author": "Grace"},
 	}))
 	book3 := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "book", "title": "Book three", "content": "Book three notes",
+		"type_id": "book", "title": "Book three", "document": documentFixture("Book three notes"),
 	}))
 	book4 := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "book", "title": "Book four", "content": "Book four notes",
+		"type_id": "book", "title": "Book four", "document": documentFixture("Book four notes"),
 	}))
 	book5 := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
 		"type_id": "book", "title": "Book five",
@@ -81,7 +81,7 @@ func TestScenarioCollectionQueryExportJourney(t *testing.T) {
 		"type_id": "person", "title": "The critic",
 	}))
 	review := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "note", "title": "Review of Book one", "content": "A careful review",
+		"type_id": "note", "title": "Review of Book one", "document": documentFixture("A careful review"),
 		"links": []string{person.ID, book1.ID},
 	}))
 	reviewedBooks := queryObjects(t, app, "type_id=book&backlinked_includes="+review.ID)

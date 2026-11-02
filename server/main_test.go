@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -43,6 +44,27 @@ func makeApp(t *testing.T) (*App, string, []byte) {
 func api(t *testing.T, a *App, method, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	var reader io.Reader
+	// Metadata scenarios use a fresh CAS base by default. Tests of stale or
+	// missing document revisions supply document/base_revision explicitly.
+	if method == "PATCH" && body != nil {
+		parts := strings.Split(strings.Trim(path, "/"), "/")
+		if len(parts) == 3 && parts[0] == "v1" && parts[1] == "objects" {
+			if input, ok := body.(map[string]any); ok {
+				_, native := input["document"]
+				_, explicit := input["base_revision"]
+				if !native && !explicit {
+					if current, err := a.store.Object(parts[2]); err == nil {
+						copy := map[string]any{}
+						for k, v := range input {
+							copy[k] = v
+						}
+						copy["base_revision"] = current.Revision
+						body = copy
+					}
+				}
+			}
+		}
+	}
 	if body != nil {
 		raw, err := json.Marshal(body)
 		if err != nil {
@@ -53,6 +75,7 @@ func api(t *testing.T, a *App, method, path string, body any) *httptest.Response
 	req := httptest.NewRequest(method, path, reader)
 	req.Header.Set("Authorization", "Bearer "+testToken)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Lumen-Document-Version", "2")
 	rr := httptest.NewRecorder()
 	a.Handler().ServeHTTP(rr, req)
 	return rr
@@ -71,12 +94,12 @@ func objectFrom(t *testing.T, rr *httptest.ResponseRecorder) Object {
 
 func TestAPIObjectsRelationsJournalPersistenceAndEncryption(t *testing.T) {
 	app, path, key := makeApp(t)
-	book := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "book", "title": "SECRET_BOOK_SENTINEL_8412", "content": "Study notes", "properties": map[string]any{"rich_text": "<p><b>Study notes</b></p>"}}))
+	book := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "book", "title": "SECRET_BOOK_SENTINEL_8412", "document": documentFixture("Study notes")}))
 	if book.SyncStatus != "synced" || book.Revision != 1 {
 		t.Fatalf("HTTP must acknowledge a durable local save: %+v", book)
 	}
 	journal := objectFrom(t, api(t, app, "GET", "/v1/journal/2026-10-09", nil))
-	journal = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+journal.ID, map[string]any{"content": "I read the book", "links": []string{book.ID}}))
+	journal = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+journal.ID, documentPatchPayload(t, app, journal.ID, map[string]any{"document": documentFixture("I read the book"), "links": []string{book.ID}})))
 	backlinks := api(t, app, "GET", "/v1/objects/"+book.ID+"/backlinks", nil)
 	var linked []Object
 	if err := json.Unmarshal(backlinks.Body.Bytes(), &linked); err != nil {
@@ -108,7 +131,7 @@ func TestAPIObjectsRelationsJournalPersistenceAndEncryption(t *testing.T) {
 	}
 	app.store = reopened
 	restored := objectFrom(t, api(t, app, "GET", "/v1/objects/"+book.ID, nil))
-	if restored.Title != book.Title || restored.Properties["rich_text"] != book.Properties["rich_text"] {
+	if restored.Title != book.Title || !reflect.DeepEqual(restored.Document, book.Document) {
 		t.Fatal("restore lost content or formatting")
 	}
 	if wrong, err := OpenStore(path, bytes.Repeat([]byte{9}, 32)); err == nil {
@@ -207,6 +230,7 @@ func TestAssetEncryptionAndAuthenticatedMemoryDownload(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v1/assets", body)
 	req.Header.Set("Authorization", "Bearer "+testToken)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("X-Lumen-Document-Version", "2")
 	rr := httptest.NewRecorder()
 	app.Handler().ServeHTTP(rr, req)
 	if rr.Code != 201 {
@@ -304,7 +328,7 @@ func TestOpenGraphParsing(t *testing.T) {
 
 func TestAtomicAddLinksPreservesConcurrentRelationsAndDocument(t *testing.T) {
 	app, _, _ := makeApp(t)
-	original := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Original journal", "content": "Latest text", "properties": map[string]any{"rich_text": "<p>Latest text</p>"}}))
+	original := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Original journal", "document": documentFixture("Latest text")}))
 	ids := make([]string, 8)
 	for i := range ids {
 		ids[i] = objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "book", "title": fmt.Sprintf("Link target %d", i)})).ID
@@ -314,15 +338,25 @@ func TestAtomicAddLinksPreservesConcurrentRelationsAndDocument(t *testing.T) {
 		wg.Add(1)
 		go func(id string) {
 			defer wg.Done()
-			rr := api(t, app, "PATCH", "/v1/objects/"+original.ID, map[string]any{"add_links": []string{id, id}})
-			if rr.Code != 200 {
-				t.Errorf("add relation: HTTP %d", rr.Code)
+			// Each writer explicitly reads a CAS base. A concurrent commit may
+			// win first; retry the same semantic add against the latest revision.
+			for attempt := 0; attempt < 20; attempt++ {
+				current := objectFrom(t, api(t, app, "GET", "/v1/objects/"+original.ID, nil))
+				rr := api(t, app, "PATCH", "/v1/objects/"+original.ID, map[string]any{"add_links": []string{id, id}, "base_revision": current.Revision, "op_id": newID()})
+				if rr.Code == 200 {
+					return
+				}
+				if rr.Code != 409 {
+					t.Errorf("add relation: HTTP %d", rr.Code)
+					return
+				}
 			}
+			t.Error("relation writer exhausted CAS retries")
 		}(id)
 	}
 	wg.Wait()
 	got := objectFrom(t, api(t, app, "GET", "/v1/objects/"+original.ID, nil))
-	if len(got.Links) != len(ids) || got.Title != original.Title || got.Content != original.Content || got.Properties["rich_text"] != original.Properties["rich_text"] {
+	if len(got.Links) != len(ids) || got.Title != original.Title || got.Content != original.Content || !reflect.DeepEqual(got.Document, original.Document) {
 		t.Fatal("atomic relation union overwrote current content or lost concurrent links")
 	}
 	bad := api(t, app, "PATCH", "/v1/objects/"+original.ID, map[string]any{"add_links": []string{"missing-id"}})

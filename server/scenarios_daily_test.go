@@ -6,6 +6,7 @@ package main
 // capture and query filters.
 
 import (
+	"lumen/server/internal/document"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -47,31 +48,15 @@ func TestScenarioDailyNoteCaptureJourney(t *testing.T) {
 
 	// Step 3: write the note. The block runs carry the @-mentions and the
 	// explicit links array is what the relation index and backlinks use.
-	journal = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+journal.ID, map[string]any{
-		"content": "Coffee with Ada about the Lumen parity project",
-		"links":   []string{person.ID, project.ID},
-		"properties": map[string]any{
-			"date":    "2026-10-31",
-			"tags":    []string{tag.ID},
-			"aliases": []string{"Weekend log"},
-			"blocks": []any{
-				map[string]any{
-					"id": "daily-block-1", "type": "paragraph",
-					"text": "Coffee with Ada about the Lumen parity project",
-					"runs": []any{
-						map[string]any{"text": "Coffee with "},
-						map[string]any{"text": "Ada", "href": "lumen://object/" + person.ID, "object_id": person.ID, "type_id": "person"},
-						map[string]any{"text": " about the "},
-						map[string]any{"text": "Lumen parity project", "href": "lumen://object/" + project.ID, "object_id": project.ID, "type_id": "project"},
-					},
-				},
-			},
-		},
-	}))
+	journalDoc := document.Document{SchemaVersion: 2, Blocks: []document.Node{{ID: "daily-block-1", Type: "paragraph", Content: []document.Inline{
+		{Type: "text", Text: "Coffee with "}, {Type: "object_ref", ObjectID: person.ID, Label: "Ada"}, {Type: "text", Text: " about the "}, {Type: "object_ref", ObjectID: project.ID, Label: "Lumen parity project"},
+	}}}}
+	journal = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+journal.ID, documentPatchPayload(t, app, journal.ID, map[string]any{"document": journalDoc, "properties": map[string]any{"date": "2026-10-31", "tags": []string{tag.ID}, "aliases": []string{"Weekend log"}}})))
+
 	if journal.Revision != 2 {
 		t.Fatalf("journal write revision = %d", journal.Revision)
 	}
-	if !scenarioContainsID(journal.Links, person.ID) || !scenarioContainsID(journal.Links, project.ID) {
+	if !scenarioContainsID(journal.DocumentLinks, person.ID) || !scenarioContainsID(journal.DocumentLinks, project.ID) {
 		t.Fatalf("journal lost its @-mentions: %v", journal.Links)
 	}
 	if aliases := aliasesOf(t, journal); !sameStrings(aliases, []string{"Weekend log"}) {
@@ -80,7 +65,7 @@ func TestScenarioDailyNoteCaptureJourney(t *testing.T) {
 	if tags, ok := journal.Properties["tags"].([]any); !ok || len(tags) != 1 || tags[0] != tag.ID {
 		t.Fatalf("journal tag was not stored: %#v", journal.Properties["tags"])
 	}
-	if blocks := scenarioObjectBlocks(t, journal); len(blocks) != 1 || len(blocks[0].Runs) != 4 {
+	if blocks := journal.Document.Blocks; len(blocks) != 1 || len(blocks[0].Content) != 4 {
 		t.Fatalf("journal block tree was not stored: %+v", blocks)
 	}
 

@@ -1,0 +1,53 @@
+{
+  "input": {
+    "schema_version": 2,
+    "blocks": [
+      {
+        "id": "a",
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "Uno"
+          }
+        ],
+        "children": [
+          {
+            "id": "child",
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Hijo"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "b",
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "Dos"
+          }
+        ]
+      }
+    ]
+  },
+  "commands": [
+    {
+      "type": "set_attrs",
+      "node_id": "b",
+      "attrs": {
+        "alignment": "center"
+      }
+    },
+    {
+      "type": "delete",
+      "node_id": "missing"
+    }
+  ],
+  "error_contains": "not found"
+}

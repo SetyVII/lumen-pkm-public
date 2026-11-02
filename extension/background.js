@@ -13,7 +13,7 @@ async function capture(values) {
   try {
     response = await fetch(`${api}/v1/capture`, {
       method: "POST",
-      headers: {"Content-Type": "application/json", "Authorization": `Bearer ${connection.token}`},
+      headers: {"Content-Type": "application/json", "X-Lumen-Document-Version": "2", "Authorization": `Bearer ${connection.token}`},
       body: JSON.stringify(payload),
       credentials: "omit",
       redirect: "error",

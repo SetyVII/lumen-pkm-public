@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -20,22 +21,22 @@ func TestMemIndexBacklinksAndNoOpPatch(t *testing.T) {
 		t.Fatalf("indexed backlinks failed: %s", rr.Body.String())
 	}
 	revision := note.Revision
-	same := objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+note.ID, map[string]any{
-		"title": note.Title, "content": note.Content, "properties": note.Properties, "links": note.Links,
-	}))
+	same := objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+note.ID, documentPatchPayload(t, app, note.ID, map[string]any{
+		"title": note.Title, "document": note.Document, "properties": note.Properties, "links": note.Links,
+	})))
 	if same.Revision != revision {
 		t.Fatalf("no-op patch bumped revision %d -> %d", revision, same.Revision)
 	}
 	plain := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Sin relaciones"}))
 	plainRevision := plain.Revision
-	plain = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+plain.ID, map[string]any{
-		"title": plain.Title, "content": plain.Content, "properties": plain.Properties, "links": plain.Links,
-	}))
+	plain = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+plain.ID, documentPatchPayload(t, app, plain.ID, map[string]any{
+		"title": plain.Title, "document": plain.Document, "properties": plain.Properties, "links": plain.Links,
+	})))
 	if plain.Revision != plainRevision {
 		t.Fatalf("no-op patch on an object without relations bumped revision %d -> %d", plainRevision, plain.Revision)
 	}
 	head, _ := app.store.HeadSeq()
-	same = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+note.ID, map[string]any{"content": "changed"}))
+	same = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+note.ID, documentPatchPayload(t, app, note.ID, map[string]any{"document": documentFixture("changed")})))
 	if same.Revision != revision+1 {
 		t.Fatalf("real patch did not bump revision: %+v", same)
 	}
@@ -48,7 +49,7 @@ func TestMemIndexBacklinksAndNoOpPatch(t *testing.T) {
 func TestPatchBaseRevisionConflict(t *testing.T) {
 	app, _, _ := makeApp(t)
 	o := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "CAS"}))
-	rr := api(t, app, "PATCH", "/v1/objects/"+o.ID, map[string]any{"content": "stale", "base_revision": o.Revision + 10})
+	rr := api(t, app, "PATCH", "/v1/objects/"+o.ID, documentPatchPayload(t, app, o.ID, map[string]any{"document": documentFixture("stale"), "base_revision": o.Revision + 10}))
 	if rr.Code != 409 || !strings.Contains(rr.Body.String(), `"conflict":true`) {
 		t.Fatalf("expected 409, got %d: %s", rr.Code, rr.Body.String())
 	}
@@ -58,7 +59,7 @@ func TestPatchBaseRevisionConflict(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &conflict); err != nil || conflict.Current.ID != o.ID || conflict.Current.Revision != o.Revision {
 		t.Fatalf("409 did not return current object: %s", rr.Body.String())
 	}
-	ok := objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, map[string]any{"content": "fresh", "base_revision": o.Revision}))
+	ok := objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, documentPatchPayload(t, app, o.ID, map[string]any{"document": documentFixture("fresh"), "base_revision": o.Revision})))
 	if ok.Revision != o.Revision+1 || ok.Content != "fresh" {
 		t.Fatalf("matching base_revision failed: %+v", ok)
 	}
@@ -114,7 +115,7 @@ func TestSyncPushIgnoresTombstoneAndFiltersDeadLinks(t *testing.T) {
 		"operations": []any{map[string]any{
 			"op_id": "op-dead-link-1", "action": "put", "base_revision": note.Revision,
 			"object": map[string]any{
-				"id": note.ID, "type_id": "note", "title": note.Title, "content": "offline edit",
+				"id": note.ID, "type_id": "note", "title": note.Title, "document": documentFixture("offline edit"),
 				"properties": map[string]any{"tags": []string{tag.ID}}, "links": []string{tag.ID},
 				"created_at": note.CreatedAt, "updated_at": nowValue,
 			},
@@ -143,7 +144,7 @@ func TestSyncPushIgnoresTombstoneAndFiltersDeadLinks(t *testing.T) {
 	push["operations"] = []any{map[string]any{
 		"op_id": "op-dead-link-2", "action": "put", "base_revision": got.Revision,
 		"object": map[string]any{
-			"id": note.ID, "type_id": "note", "title": note.Title, "content": "after purge",
+			"id": note.ID, "type_id": "note", "title": note.Title, "document": documentFixture("after purge"),
 			"properties": map[string]any{"tags": []string{tag.ID}}, "links": []string{tag.ID},
 			"created_at": note.CreatedAt, "updated_at": now(),
 		},
@@ -164,7 +165,7 @@ func TestSyncPushIgnoresTombstoneAndFiltersDeadLinks(t *testing.T) {
 		"device_id": "pixel-index-test", "base_seq": 0,
 		"operations": []any{map[string]any{
 			"op_id": "op-resurrect-1", "action": "put", "base_revision": 0,
-			"object": map[string]any{"id": tag.ID, "type_id": "tag", "title": "Borrada", "content": "", "properties": map[string]any{}, "links": []string{}, "created_at": nowValue, "updated_at": nowValue},
+			"object": map[string]any{"id": tag.ID, "type_id": "tag", "title": "Borrada", "document": documentFixture(""), "properties": map[string]any{}, "links": []string{}, "created_at": nowValue, "updated_at": nowValue},
 		}},
 	}
 	resp = decodeBody[syncPushResponse](t, api(t, app, "POST", "/v1/sync/push", resurrect))
@@ -176,7 +177,7 @@ func TestSyncPushIgnoresTombstoneAndFiltersDeadLinks(t *testing.T) {
 	}
 }
 
-func TestSyncConflictMergesObjectTagLists(t *testing.T) {
+func TestSyncConflictRejectsStaleTagsAndAcceptsExplicitUnion(t *testing.T) {
 	app, _, _ := makeApp(t)
 	one := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "tag", "title": "Uno"}))
 	two := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "tag", "title": "Dos"}))
@@ -190,16 +191,34 @@ func TestSyncConflictMergesObjectTagLists(t *testing.T) {
 		"operations": []any{map[string]any{
 			"op_id": "op-tag-merge-1", "action": "put", "base_revision": base,
 			"object": map[string]any{
-				"id": note.ID, "type_id": "note", "title": note.Title, "content": note.Content,
+				"id": note.ID, "type_id": "note", "title": note.Title, "document": note.Document,
 				"properties": map[string]any{"tags": []string{one.ID}}, "links": []string{},
 				"created_at": note.CreatedAt, "updated_at": nowValue,
 			},
 		}},
 	}
 	resp := decodeBody[syncPushResponse](t, api(t, app, "POST", "/v1/sync/push", push))
-	if len(resp.Errors) != 0 {
-		t.Fatalf("merge failed: %+v", resp)
+	if len(resp.Errors) != 1 || !strings.HasPrefix(resp.Errors[0].Error, "document_conflict") || len(resp.Applied) != 0 {
+		t.Fatalf("stale tags were not rejected: %+v", resp)
 	}
+	current, err := app.store.Object(note.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Revision != base+1 || len(current.PropertyLinks) != 1 || current.PropertyLinks[0] != two.ID {
+		t.Fatalf("stale push changed committed tags: %+v", current)
+	}
+	operation := push["operations"].([]any)[0].(map[string]any)
+	operation["base_revision"] = current.Revision
+	operation["op_id"] = "op-tag-explicit-union"
+	object := operation["object"].(map[string]any)
+	object["document"] = current.Document
+	object["properties"] = map[string]any{"tags": []string{one.ID, two.ID}}
+	resp = decodeBody[syncPushResponse](t, api(t, app, "POST", "/v1/sync/push", push))
+	if len(resp.Errors) != 0 || len(resp.Applied) != 1 {
+		t.Fatalf("explicit rebased union failed: %+v", resp)
+	}
+
 	got, err := app.store.Object(note.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -262,5 +281,33 @@ func TestHealthIsReadyWithoutExporter(t *testing.T) {
 	}
 	if strings.Contains(rr.Body.String(), "logseq-db") {
 		t.Fatal("health still advertises Logseq as the source of truth")
+	}
+}
+
+func TestReopenStreamsDocumentsIntoMetadataIndex(t *testing.T) {
+	a, path, key := makeApp(t)
+	tag := objectFrom(t, api(t, a, "POST", "/v1/objects", map[string]any{"type_id": "tag", "title": "Large library tag"}))
+	d := documentFixture(strings.Repeat("body text ", 10000))
+	for i := range 24 {
+		o := Object{ID: fmt.Sprintf("stream-index-%02d", i), TypeID: "note", Title: fmt.Sprintf("Stream title %02d", i), Document: &d, Properties: map[string]any{"aliases": []any{fmt.Sprintf("Stream alias %02d", i)}}, Links: []string{tag.ID}, CreatedAt: now(), UpdatedAt: now()}
+		if err := a.saveObject(t.Context(), &o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reopened, err := OpenStore(path, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if len(reopened.index.backlinkIDs(tag.ID)) != 24 {
+		t.Fatal("stream rebuild lost relationship metadata")
+	}
+	meta, ok := reopened.index.getMeta("stream-index-13")
+	if !ok || meta.Title != "Stream title 13" || len(meta.Aliases) != 1 || meta.Aliases[0] != "Stream alias 13" {
+		t.Fatal("stream rebuild lost title/alias metadata")
+	}
+	loaded, err := reopened.Object(meta.ID)
+	if err != nil || loaded.Document == nil || loaded.Content != strings.Repeat("body text ", 10000) {
+		t.Fatal("stream index changed stored document")
 	}
 }

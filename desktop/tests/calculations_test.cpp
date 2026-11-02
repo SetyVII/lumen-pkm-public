@@ -1,10 +1,3 @@
-// D7 (view calculations): Capacities-style calculations in the desktop data
-// views (https://docs.capacities.io/reference/views#calculations). Covers
-// the pure op-per-type engine (lumen_calculations.{hpp,cpp}) and the
-// LumenViews surfaces: the table column footer, the summary strip, the
-// per-group lines, the Customize "Calculations" add/edit/remove flow, the
-// persisted spec, live recalculation and the empty-view rule. Offscreen,
-// no server — the data is the view's own objects.
 #include "../src/views/lumen_calculations.hpp"
 #include "../src/views/lumen_views.hpp"
 #include <QtWidgets>

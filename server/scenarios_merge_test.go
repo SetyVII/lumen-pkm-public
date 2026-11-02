@@ -7,6 +7,7 @@ package main
 // backlinks.
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -19,10 +20,13 @@ func TestScenarioDuplicateMergeJourney(t *testing.T) {
 		t.Helper()
 		markdown := "# " + title + "\n\n" + body + "\n"
 		blocks := scenarioMarkdownBlocks(t, app, markdown)
+		doc, err := canonicalDocumentFromBlocks(blocks)
+		if err != nil {
+			t.Fatal(err)
+		}
 		return objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-			"type_id": "book", "title": title, "content": body,
+			"type_id": "book", "title": title, "document": doc,
 			"properties": map[string]any{
-				"blocks":  blocks,
 				"tags":    []string{tag.ID},
 				"aliases": aliases,
 			},
@@ -38,7 +42,7 @@ func TestScenarioDuplicateMergeJourney(t *testing.T) {
 	// A reading list links the duplicate, which is the reference merge must
 	// rewrite.
 	linker := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "note", "title": "Reading list", "content": "See the draft",
+		"type_id": "note", "title": "Reading list", "document": documentFixture("See the draft"),
 		"links": []string{duplicate.ID},
 	}))
 	linkerRevision := linker.Revision
@@ -56,11 +60,11 @@ func TestScenarioDuplicateMergeJourney(t *testing.T) {
 	}
 	scenarioAssertContains(t, merged.Content, "Canonical body", "merged content")
 	scenarioAssertContains(t, merged.Content, "Duplicate body", "merged content")
-	blocks := scenarioObjectBlocks(t, merged)
+	blocks := merged.Document.Blocks
 	if len(blocks) != 4 {
 		t.Fatalf("merge did not append the duplicate's blocks: %+v", blocks)
 	}
-	if blocks[2].Text != "Deep Work draft" || blocks[3].Text != "Duplicate body" {
+	if blocks[2].Content[0].Text != "Deep Work draft" || blocks[3].Content[0].Text != "Duplicate body" {
 		t.Fatalf("appended blocks are wrong: %+v", blocks[2:])
 	}
 	tags, ok := merged.Properties["tags"].([]any)
@@ -103,7 +107,7 @@ func TestScenarioDuplicateMergeJourney(t *testing.T) {
 	// back its own content and properties, but the links now point at the
 	// canonical copy, so it has no backlinks: a documented degraded duplicate.
 	restored := objectFrom(t, api(t, app, "POST", "/v1/objects/"+duplicate.ID+"/restore", nil))
-	if restored.Content != "Duplicate body" {
+	if !reflect.DeepEqual(restored.Document, duplicate.Document) {
 		t.Fatalf("restored duplicate lost its own body: %q", restored.Content)
 	}
 	if !strings.Contains(restored.Title, "Deep Work draft") {

@@ -25,6 +25,7 @@ using CallbackEx = std::function<void(int, QJsonValue, QString)>;
 
 class Api : public QObject {
     QNetworkAccessManager manager;
+    QString documentProtocolBase_;
     QCache<QString, QByteArray> assetCache{64 * 1024};
     QHash<QString, QList<std::function<void(QByteArray, QString)>>> assetWaiters;
 
@@ -45,8 +46,16 @@ class Api : public QObject {
             cb(0, {}, "La conexión remota necesita HTTPS.");
             return;
         }
+        if (method != "GET" && body.contains("document") && documentProtocolBase_ != base) {
+            requestEx("GET", "/v1/types", {}, [this, method, path, body, cb](int, QJsonValue, QString error) {
+                if (!error.isEmpty()) { cb(0, {}, error); return; }
+                requestEx(method, path, body, cb);
+            }); return;
+        }
+        const auto requestBase = base;
         QNetworkRequest req(QUrl(base + path));
         req.setRawHeader("Authorization", "Bearer " + token);
+        req.setRawHeader("X-Lumen-Document-Version", "2");
         req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
         req.setRawHeader("Cache-Control", "no-store");
         req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
@@ -57,11 +66,19 @@ class Api : public QObject {
             reply = manager.get(req);
         else
             reply = manager.sendCustomRequest(req, method.toUtf8(), bytes);
-        QObject::connect(reply, &QNetworkReply::finished, this, [reply, cb] {
+        QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, cb, method, requestBase] {
             const auto data = reply->readAll();
             const auto doc = QJsonDocument::fromJson(data);
             const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
             QString err;
+            if (method == "GET" && status / 100 == 2) {
+                if (reply->rawHeader("X-Lumen-Document-Version").trimmed() != "2") {
+                    documentProtocolBase_.clear();
+                    cb(status, {}, "Servidor incompatible: actualiza el backend al protocolo de documento 2 antes de abrir o guardar notas.");
+                    reply->deleteLater(); return;
+                }
+                documentProtocolBase_ = requestBase;
+            }
             if (status / 100 == 3)
                 err = "El servidor respondió con una redirección. Revisa la dirección de la API.";
             else if (reply->error() != QNetworkReply::NoError) {
@@ -83,6 +100,16 @@ class Api : public QObject {
         request("POST", p, b, cb);
     }
     void patch(const QString &p, const QJsonObject &b, Callback cb) {
+        if (b.size() == 1 && b.contains("add_links")) {
+            // A commutative relation intent has no stale body snapshot. Obtain
+            // its CAS base explicitly; never use this path for document edits.
+            get(p, [this, p, b, cb](QJsonValue current, QString error) {
+                if (!error.isEmpty()) { cb({}, error); return; }
+                auto patch = b; patch["base_revision"] = current.toObject().value("revision");
+                request("PATCH", p, patch, cb);
+            });
+            return;
+        }
         request("PATCH", p, b, cb);
     }
     void patchEx(const QString &p, const QJsonObject &b, CallbackEx cb) {
@@ -117,6 +144,7 @@ class Api : public QObject {
         multi->append(part);
         QNetworkRequest req(QUrl(base + "/v1/assets"));
         req.setRawHeader("Authorization", "Bearer " + token);
+        req.setRawHeader("X-Lumen-Document-Version", "2");
         req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
         req.setTransferTimeout(30000);
         auto *reply = manager.post(req, multi);
@@ -154,6 +182,7 @@ class Api : public QObject {
         multi->append(part);
         QNetworkRequest req(QUrl(base + "/v1/assets"));
         req.setRawHeader("Authorization", "Bearer " + token);
+        req.setRawHeader("X-Lumen-Document-Version", "2");
         req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
         req.setTransferTimeout(30000);
         auto *reply = manager.post(req, multi);
@@ -188,6 +217,7 @@ class Api : public QObject {
         assetWaiters[path].append(std::move(cb));
         QNetworkRequest req(QUrl(base + path));
         req.setRawHeader("Authorization", "Bearer " + token);
+        req.setRawHeader("X-Lumen-Document-Version", "2");
         req.setRawHeader("Cache-Control", "no-store");
         req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
         req.setTransferTimeout(15000);

@@ -1,0 +1,124 @@
+{
+  "input": {
+    "schema_version": 2,
+    "blocks": [
+      {
+        "id": "log",
+        "type": "heading",
+        "attrs": {
+          "level": 2
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Log"
+          }
+        ]
+      },
+      {
+        "id": "a",
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "A"
+          }
+        ]
+      },
+      {
+        "id": "plan",
+        "type": "heading",
+        "attrs": {
+          "level": 2
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Plan"
+          }
+        ]
+      }
+    ]
+  },
+  "commands": [
+    {
+      "type": "append_section",
+      "node": {
+        "id": "new-heading",
+        "type": "heading",
+        "attrs": {
+          "level": 2
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Log"
+          }
+        ],
+        "children": [
+          {
+            "id": "b",
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "B"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "expected": {
+    "schema_version": 2,
+    "blocks": [
+      {
+        "id": "log",
+        "type": "heading",
+        "attrs": {
+          "level": 2
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Log"
+          }
+        ]
+      },
+      {
+        "id": "a",
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "A"
+          }
+        ]
+      },
+      {
+        "id": "b",
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "B"
+          }
+        ]
+      },
+      {
+        "id": "plan",
+        "type": "heading",
+        "attrs": {
+          "level": 2
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Plan"
+          }
+        ]
+      }
+    ]
+  }
+}

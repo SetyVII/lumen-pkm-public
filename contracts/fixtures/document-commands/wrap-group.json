@@ -1,0 +1,92 @@
+{
+  "input": {
+    "schema_version": 2,
+    "blocks": [
+      {
+        "id": "a",
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "Uno"
+          }
+        ],
+        "children": [
+          {
+            "id": "child",
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Hijo"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "b",
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "Dos"
+          }
+        ]
+      }
+    ]
+  },
+  "commands": [
+    {
+      "type": "wrap",
+      "node_id": "b",
+      "node": {
+        "id": "wrapper",
+        "type": "group"
+      }
+    }
+  ],
+  "expected": {
+    "schema_version": 2,
+    "blocks": [
+      {
+        "id": "a",
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "Uno"
+          }
+        ],
+        "children": [
+          {
+            "id": "child",
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Hijo"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "wrapper",
+        "type": "group",
+        "children": [
+          {
+            "id": "b",
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Dos"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

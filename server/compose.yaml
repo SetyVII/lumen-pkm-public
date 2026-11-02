@@ -4,7 +4,9 @@ services:
   lumen:
     image: lumen-pkm:local
     platform: linux/amd64
-    build: .
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
     restart: unless-stopped
     ports:
       - "127.0.0.1:8765:8765"

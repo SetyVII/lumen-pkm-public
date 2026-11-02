@@ -74,7 +74,7 @@ func TestSyncPullPushIdempotentJournalAppendAndConflict(t *testing.T) {
 			"op_id": "op-note-0001", "action": "put", "base_revision": 0,
 			"object": map[string]any{
 				"id": noteID, "type_id": "note", "title": "Nota desde el móvil",
-				"content": "Hola desde Android", "properties": map[string]any{}, "links": []string{},
+				"document": documentFixture("Hola desde Android"), "properties": map[string]any{}, "links": []string{},
 				"created_at": now, "updated_at": now,
 			},
 		}},
@@ -107,7 +107,7 @@ func TestSyncPullPushIdempotentJournalAppendAndConflict(t *testing.T) {
 			"base_revision": journal.Revision,
 			"object": map[string]any{
 				"id": journal.ID, "type_id": "journal", "title": journal.Title,
-				"content": "Foto del día: café en el parque", "properties": map[string]any{},
+				"document": documentFixture("Foto del día: café en el parque"), "properties": map[string]any{},
 				"links": []string{noteID}, "created_at": journal.CreatedAt, "updated_at": now,
 			},
 		}},
@@ -128,30 +128,30 @@ func TestSyncPullPushIdempotentJournalAppendAndConflict(t *testing.T) {
 		t.Fatalf("journal links were not merged: %+v", journal.Links)
 	}
 
-	conflict := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Conflicto de edición", "content": "versión PC"}))
-	conflict = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+conflict.ID, map[string]any{"content": "versión PC actualizada"}))
+	conflict := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Conflicto de edición", "document": documentFixture("versión PC")}))
+	conflict = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+conflict.ID, documentPatchPayload(t, app, conflict.ID, map[string]any{"document": documentFixture("versión PC actualizada")})))
 	conflictPush := map[string]any{
 		"device_id": "pixel-test", "base_seq": pull.HeadSeq,
 		"operations": []any{map[string]any{
 			"op_id": "op-conflict-1", "action": "put", "base_revision": conflict.Revision - 1,
 			"object": map[string]any{
 				"id": conflict.ID, "type_id": "note", "title": conflict.Title,
-				"content": "versión móvil", "properties": map[string]any{}, "links": []string{},
+				"document": documentFixture("versión móvil"), "properties": map[string]any{}, "links": []string{},
 				"created_at": conflict.CreatedAt, "updated_at": now,
 			},
 		}},
 	}
 	conflictResult := decodeBody[syncPushResponse](t, api(t, app, "POST", "/v1/sync/push", conflictPush))
-	if len(conflictResult.Conflicts) != 1 || conflictResult.Conflicts[0].Resolution != "server_kept_mobile_appended" {
-		t.Fatalf("expected explicit conflict resolution: %+v", conflictResult)
+	if len(conflictResult.Errors) != 1 || !strings.HasPrefix(conflictResult.Errors[0].Error, "document_conflict") || len(conflictResult.Applied) != 0 {
+		t.Fatalf("stale canonical snapshot must remain unacknowledged: %+v", conflictResult)
 	}
 	conflict = objectFrom(t, api(t, app, "GET", "/v1/objects/"+conflict.ID, nil))
-	if !strings.Contains(conflict.Content, "versión PC actualizada") || !strings.Contains(conflict.Content, "Edición desde móvil") || !strings.Contains(conflict.Content, "versión móvil") {
-		t.Fatalf("conflict lost a version: %q", conflict.Content)
+	if conflict.Content != "versión PC actualizada" {
+		t.Fatalf("stale snapshot mutated the committed document: %q", conflict.Content)
 	}
 }
 
-func TestSyncTaskUsesNewestUpdatedAtAndAssetPush(t *testing.T) {
+func TestSyncTaskUsesRevisionRatherThanFutureTimestampAndAssetPush(t *testing.T) {
 	app, _, _ := makeApp(t)
 	task := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "task", "title": "Tarea móvil", "properties": map[string]any{"status": "todo"}}))
 	task = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+task.ID, map[string]any{"properties": map[string]any{"status": "done"}}))
@@ -161,19 +161,34 @@ func TestSyncTaskUsesNewestUpdatedAtAndAssetPush(t *testing.T) {
 		"operations": []any{map[string]any{
 			"op_id": "op-task-0001", "action": "put", "base_revision": task.Revision,
 			"object": map[string]any{
-				"id": task.ID, "type_id": "task", "title": task.Title, "content": "",
+				"id": task.ID, "type_id": "task", "title": task.Title, "document": documentFixture(""),
 				"properties": map[string]any{"status": "todo"}, "links": []string{},
 				"created_at": task.CreatedAt, "updated_at": future,
 			},
 		}},
 	}
 	result := decodeBody[syncPushResponse](t, api(t, app, "POST", "/v1/sync/push", push))
-	if len(result.Errors) != 0 || len(result.Conflicts) != 1 || result.Conflicts[0].Resolution != "task_latest_updated_at" {
-		t.Fatalf("task timestamp merge failed: %+v", result)
+	if len(result.Errors) != 0 || len(result.Applied) != 1 || len(result.Conflicts) != 0 {
+		t.Fatalf("task at the matching revision failed: %+v", result)
 	}
 	task = objectFrom(t, api(t, app, "GET", "/v1/objects/"+task.ID, nil))
 	if task.Properties["status"] != "todo" {
 		t.Fatalf("newer mobile task state was not applied: %+v", task.Properties)
+	}
+	// Clock skew cannot authorize a stale canonical snapshot. Keep the
+	// committed task status until the client rebases against its new revision.
+	staleOperation := push["operations"].([]any)[0].(map[string]any)
+	staleOperation["op_id"] = "op-task-stale-future"
+	staleObject := staleOperation["object"].(map[string]any)
+	staleObject["updated_at"] = "9999-01-01T10:00:00Z"
+	staleObject["properties"] = map[string]any{"status": "done"}
+	stale := decodeBody[syncPushResponse](t, api(t, app, "POST", "/v1/sync/push", push))
+	if len(stale.Errors) != 1 || !strings.HasPrefix(stale.Errors[0].Error, "document_conflict") || len(stale.Applied) != 0 {
+		t.Fatalf("future timestamp bypassed canonical revision: %+v", stale)
+	}
+	unchanged := objectFrom(t, api(t, app, "GET", "/v1/objects/"+task.ID, nil))
+	if unchanged.Revision != task.Revision || unchanged.Properties["status"] != "todo" {
+		t.Fatal("rejected future snapshot changed committed task state")
 	}
 
 	imageBytes := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0}

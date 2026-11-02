@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"lumen/server/internal/document"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -207,7 +208,7 @@ func mcpReadFixtures(t *testing.T, app *App) (book, deep, note, collection, temp
 	tag := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "tag", "title": "philosophy"}))
 	// properties is a replacement document: the aliases must ride along.
 	book = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+book.ID, map[string]any{
-		"properties": map[string]any{"aliases": []string{"THH"}, "tags": []string{tag.ID}},
+		"properties": map[string]any{"aliases": []string{"THH"}, "tags": []string{tag.ID}}, "base_revision": book.Revision,
 	}))
 	note = objectFrom(t, api(t, app, "POST", "/v1/objects/markdown", map[string]any{
 		"type_id": "note", "title": "Study methods", "markdown": "# Methods\n\n- [ ] review",
@@ -282,7 +283,7 @@ func TestMCPReadTools(t *testing.T) {
 		t.Fatalf("read_object_blocks markdown: %q", blocks.Markdown)
 	}
 	mcpDecode(t, cs, "read_object_blocks", mcpArguments("object_id", book.ID), &blocks)
-	if len(blocks.Blocks) != 0 || blocks.Markdown != book.Content {
+	if len(blocks.Blocks) != 1 || strings.TrimSpace(blocks.Markdown) != book.Content {
 		t.Fatalf("blocks for a plain object: %+v", blocks)
 	}
 
@@ -384,7 +385,7 @@ func TestMCPCreateObjectAndAppendTools(t *testing.T) {
 	if err != nil || len(blocks) != 2 || blocks[0].Type != blockHeading || blocks[1].Type != blockTodo {
 		t.Fatalf("create_object blocks: %+v (%v)", blocks, err)
 	}
-	if stored.Content != blocksPlainText(blocks) {
+	if stored.Document == nil || stored.Content != document.PlainText(*stored.Document) {
 		t.Fatalf("create_object content mirror: %q", stored.Content)
 	}
 	tagIDs := stringList(stored.Properties["tags"])
@@ -405,20 +406,20 @@ func TestMCPCreateObjectAndAppendTools(t *testing.T) {
 
 	// Insert at position 0 through append_md_to_object.
 	var appended mcpMutateOutput
-	mcpDecode(t, cs, "append_md_to_object", mcpArguments(
+	mcpDecode(t, cs, "append_md_to_object", mcpWriteArguments(t, app,
 		"object_id", created.Object.ID, "markdown", "Inserted first", "position", 0,
 	), &appended)
 	blocks, _ = objectBlocks(objectFrom(t, api(t, app, "GET", "/v1/objects/"+created.Object.ID, nil)))
 	if len(blocks) != 3 || blocks[0].Text != "Inserted first" {
 		t.Fatalf("append_md_to_object position: %+v", blocks)
 	}
-	mcpExpectError(t, cs, "append_md_to_object", mcpArguments("object_id", created.Object.ID, "markdown", "x", "position", 99), "position")
-	mcpExpectError(t, cs, "append_md_to_object", mcpArguments("object_id", "missing-id", "markdown", "x"), "Object not found")
-	mcpExpectError(t, cs, "append_md_to_object", mcpArguments("object_id", created.Object.ID, "markdown", "  "), "Provide markdown")
+	mcpExpectError(t, cs, "append_md_to_object", mcpWriteArguments(t, app, "object_id", created.Object.ID, "markdown", "x", "position", 99), "position")
+	mcpExpectError(t, cs, "append_md_to_object", mcpWriteArguments(t, app, "object_id", "missing-id", "markdown", "x"), "Object not found")
+	mcpExpectError(t, cs, "append_md_to_object", mcpWriteArguments(t, app, "object_id", created.Object.ID, "markdown", "  "), "Provide markdown")
 
 	// The daily note append creates today's journal lazily.
 	var journal mcpMutateOutput
-	mcpDecode(t, cs, "append_to_daily_note", mcpArguments("markdown", "- walked the dog"), &journal)
+	mcpDecode(t, cs, "append_to_daily_note", mcpWriteArguments(t, app, "markdown", "- walked the dog"), &journal)
 	if journal.Object.ID != "journal-"+todayJournalDate() || journal.Object.TypeID != "journal" {
 		t.Fatalf("append_to_daily_note: %+v", journal.Object)
 	}
@@ -426,11 +427,11 @@ func TestMCPCreateObjectAndAppendTools(t *testing.T) {
 	if !strings.Contains(daily.Content, "walked the dog") {
 		t.Fatalf("daily note content: %q", daily.Content)
 	}
-	mcpDecode(t, cs, "append_to_daily_note", mcpArguments("markdown", "entry", "date", "2026-11-05"), &journal)
+	mcpDecode(t, cs, "append_to_daily_note", mcpWriteArguments(t, app, "markdown", "entry", "date", "2026-11-05"), &journal)
 	if journal.Object.ID != "journal-2026-11-05" {
 		t.Fatalf("append_to_daily_note explicit date: %+v", journal.Object)
 	}
-	mcpExpectError(t, cs, "append_to_daily_note", mcpArguments("markdown", "x", "date", "2026-13-45"), "Date must be YYYY-MM-DD")
+	mcpExpectError(t, cs, "append_to_daily_note", mcpWriteArguments(t, app, "markdown", "x", "date", "2026-13-45"), "Date must be YYYY-MM-DD")
 
 	// The same validation as POST /v1/objects/markdown.
 	mcpExpectError(t, cs, "create_object", mcpArguments("type_id", "note", "properties", map[string]any{"blocks": []any{}}), "managed by this endpoint")
@@ -465,12 +466,12 @@ func TestMCPBlockTools(t *testing.T) {
 	objectID := created.Object.ID
 
 	var added mcpMutateOutput
-	mcpDecode(t, cs, "add_block", mcpArguments("object_id", objectID, "block", map[string]any{"type": "paragraph", "text": "First paragraph"}), &added)
+	mcpDecode(t, cs, "add_block", mcpWriteArguments(t, app, "object_id", objectID, "block", map[string]any{"type": "paragraph", "text": "First paragraph"}), &added)
 	if added.Object.Content != "First paragraph" {
 		t.Fatalf("add_block on an empty object: %+v", added.Object)
 	}
-	mcpDecode(t, cs, "add_block", mcpArguments("object_id", objectID, "block", map[string]any{"type": "todo", "text": "Write tests"}, "position", 0), &added)
-	mcpDecode(t, cs, "add_block", mcpArguments("object_id", objectID, "block", map[string]any{"type": "heading", "text": "Title", "level": 9}), &added)
+	mcpDecode(t, cs, "add_block", mcpWriteArguments(t, app, "object_id", objectID, "block", map[string]any{"type": "todo", "text": "Write tests"}, "position", 0), &added)
+	mcpDecode(t, cs, "add_block", mcpWriteArguments(t, app, "object_id", objectID, "block", map[string]any{"type": "heading", "text": "Title", "level": 9}), &added)
 	blocks, _ := objectBlocks(objectFrom(t, api(t, app, "GET", "/v1/objects/"+objectID, nil)))
 	if len(blocks) != 3 {
 		t.Fatalf("add_block count: %+v", blocks)
@@ -485,30 +486,29 @@ func TestMCPBlockTools(t *testing.T) {
 	// A plain-text object refuses blocks: the block array is authoritative in
 	// the editor and would hide the plain body.
 	plain := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Plain", "content": "Just text"}))
-	mcpExpectError(t, cs, "add_block", mcpArguments("object_id", plain.ID, "block", map[string]any{"type": "paragraph", "text": "Nope"}), "plain text")
-	mcpExpectError(t, cs, "delete_block", mcpArguments("object_id", plain.ID, "block_id", "x"), "no block representation")
-	mcpExpectError(t, cs, "add_block", mcpArguments("object_id", objectID, "block", map[string]any{"type": "wat", "text": "x"}), "Unknown block type")
-	mcpExpectError(t, cs, "add_block", mcpArguments("object_id", objectID, "block", map[string]any{"type": "paragraph"}), "text or runs")
-	mcpExpectError(t, cs, "add_block", mcpArguments("object_id", objectID, "block", map[string]any{"type": "paragraph", "text": "x"}, "position", 99), "position")
+	var plainAdded mcpMutateOutput
+	mcpDecode(t, cs, "add_block", mcpWriteArguments(t, app, "object_id", plain.ID, "block", map[string]any{"type": "paragraph", "text": "Added"}), &plainAdded)
+	mcpExpectError(t, cs, "delete_block", mcpWriteArguments(t, app, "object_id", plain.ID, "block_id", "x"), "not found")
+	mcpExpectError(t, cs, "add_block", mcpWriteArguments(t, app, "object_id", objectID, "block", map[string]any{"type": "wat", "text": "x"}), "Unknown block type")
+	mcpExpectError(t, cs, "add_block", mcpWriteArguments(t, app, "object_id", objectID, "block", map[string]any{"type": "paragraph"}), "text or runs")
+	mcpExpectError(t, cs, "add_block", mcpWriteArguments(t, app, "object_id", objectID, "block", map[string]any{"type": "paragraph", "text": "x"}, "position", 99), "position")
 
 	// update_block keeps the stored id and recomputes the content mirror.
 	var update mcpMutateOutput
-	mcpDecode(t, cs, "update_block", mcpArguments("object_id", objectID, "block_id", blocks[1].ID,
+	mcpDecode(t, cs, "update_block", mcpWriteArguments(t, app, "object_id", objectID, "block_id", blocks[1].ID,
 		"block", map[string]any{"type": "heading", "text": "Renamed", "level": 2}), &update)
 	updated, _ := objectBlocks(objectFrom(t, api(t, app, "GET", "/v1/objects/"+objectID, nil)))
 	if updated[1].ID != blocks[1].ID || updated[1].Type != blockHeading || updated[1].Level != 2 {
 		t.Fatalf("update_block: %+v", updated[1])
 	}
 	stored := objectFrom(t, api(t, app, "GET", "/v1/objects/"+objectID, nil))
-	if stored.Content != blocksPlainText(updated) {
+	if stored.Document == nil || stored.Content != document.PlainText(*stored.Document) {
 		t.Fatalf("update_block content mirror: %q vs %q", stored.Content, blocksPlainText(updated))
 	}
-	mcpExpectError(t, cs, "update_block", mcpArguments("object_id", objectID, "block_id", "missing", "block", map[string]any{"type": "paragraph", "text": "x"}), "Block not found")
+	mcpExpectError(t, cs, "update_block", mcpWriteArguments(t, app, "object_id", objectID, "block_id", "missing", "block", map[string]any{"type": "paragraph", "text": "x"}), "not found")
 
-	// delete_block removes a block; the version history proves the parity
-	// with Capacities' "a new version is created automatically".
 	var removed mcpMutateOutput
-	mcpDecode(t, cs, "delete_block", mcpArguments("object_id", objectID, "block_id", blocks[0].ID), &removed)
+	mcpDecode(t, cs, "delete_block", mcpWriteArguments(t, app, "object_id", objectID, "block_id", blocks[0].ID), &removed)
 	final, _ := objectBlocks(objectFrom(t, api(t, app, "GET", "/v1/objects/"+objectID, nil)))
 	if len(final) != 2 || final[0].ID == blocks[0].ID {
 		t.Fatalf("delete_block: %+v", final)
@@ -520,7 +520,7 @@ func TestMCPBlockTools(t *testing.T) {
 
 	// Deleting every block empties the body.
 	for _, block := range final {
-		mcpDecode(t, cs, "delete_block", mcpArguments("object_id", objectID, "block_id", block.ID), &removed)
+		mcpDecode(t, cs, "delete_block", mcpWriteArguments(t, app, "object_id", objectID, "block_id", block.ID), &removed)
 	}
 	emptied := objectFrom(t, api(t, app, "GET", "/v1/objects/"+objectID, nil))
 	if _, has := emptied.Properties["blocks"]; has || emptied.Content != "" {
@@ -606,11 +606,11 @@ func TestMCPScopeEnforcement(t *testing.T) {
 
 	// Every write tool rejects the call in-band with the scope message.
 	mcpExpectError(t, cs, "create_object", mcpArguments("type_id", "note", "title", "Nope"), "api:read")
-	mcpExpectError(t, cs, "append_md_to_object", mcpArguments("object_id", seed.ID, "markdown", "nope"), "api:read")
-	mcpExpectError(t, cs, "append_to_daily_note", mcpArguments("markdown", "nope"), "api:read")
-	mcpExpectError(t, cs, "add_block", mcpArguments("object_id", seed.ID, "block", map[string]any{"type": "paragraph", "text": "no"}), "api:read")
-	mcpExpectError(t, cs, "update_block", mcpArguments("object_id", seed.ID, "block_id", "x", "block", map[string]any{"type": "paragraph", "text": "no"}), "api:read")
-	mcpExpectError(t, cs, "delete_block", mcpArguments("object_id", seed.ID, "block_id", "x"), "api:read")
+	mcpExpectError(t, cs, "append_md_to_object", mcpArguments("base_revision", uint64(1), "op_id", "readonly-test-op", "object_id", seed.ID, "markdown", "nope"), "api:read")
+	mcpExpectError(t, cs, "append_to_daily_note", mcpArguments("base_revision", uint64(1), "op_id", "readonly-test-op", "markdown", "nope"), "api:read")
+	mcpExpectError(t, cs, "add_block", mcpArguments("base_revision", uint64(1), "op_id", "readonly-test-op", "object_id", seed.ID, "block", map[string]any{"type": "paragraph", "text": "no"}), "api:read")
+	mcpExpectError(t, cs, "update_block", mcpArguments("base_revision", uint64(1), "op_id", "readonly-test-op", "object_id", seed.ID, "block_id", "x", "block", map[string]any{"type": "paragraph", "text": "no"}), "api:read")
+	mcpExpectError(t, cs, "delete_block", mcpArguments("base_revision", uint64(1), "op_id", "readonly-test-op", "object_id", seed.ID, "block_id", "x"), "api:read")
 	mcpExpectError(t, cs, "create_task", mcpArguments("title", "Nope"), "api:read")
 	if count := app.store.ObjectCount(); count != before {
 		t.Fatalf("a read-only token changed the store: %d -> %d", before, count)

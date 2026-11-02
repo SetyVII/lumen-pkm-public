@@ -66,7 +66,7 @@ import androidx.compose.ui.unit.sp
 import com.sety.lumen.mobile.data.LumenObject
 import com.sety.lumen.mobile.data.todayIso
 
-data class CapacitiesTypeItem(
+data class LumenCreateTypeItem(
     val key: String,
     val title: String,
     val isPro: Boolean = false,
@@ -99,7 +99,7 @@ fun CreateModalBottomSheet(
     }
 
     val allObjectTypes = vm.types().filter { it.id !in setOf("journal", "query", "collection", "pdf", "file", "audio", "video") }
-        .map { CapacitiesTypeItem(it.id, it.name) }
+        .map { LumenCreateTypeItem(it.id, it.name) }
     var createType by remember { mutableStateOf<String?>(null) }
     var createNewType by remember { mutableStateOf(false) }
     if (createNewType) CreateTypeDialog(vm, onDismiss = { createNewType = false }, onCreated = { createNewType = false; createType = it.id })
@@ -277,7 +277,7 @@ fun CreateModalBottomSheet(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    CapacitiesActionCard(
+                    LumenCreateActionCard(
                         title = "Página",
                         icon = Icons.Default.Description,
                         modifier = Modifier.weight(1f),
@@ -285,7 +285,7 @@ fun CreateModalBottomSheet(
                         createType = "page"
                     }
 
-                    CapacitiesActionCard(
+                    LumenCreateActionCard(
                         title = "Hoy",
                         icon = Icons.Default.CalendarMonth,
                         modifier = Modifier.weight(1f),
@@ -344,18 +344,18 @@ fun CreateModalBottomSheet(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceAround,
                 ) {
-                    CapacitiesCircleButton("Tomar foto", Icons.Default.PhotoCamera) {
+                    LumenCreateCircleButton("Tomar foto", Icons.Default.PhotoCamera) {
                         onCaptureMoment()
                         onDismiss()
                     }
-                    CapacitiesCircleButton("Fotos", Icons.Default.Photo) {
+                    LumenCreateCircleButton("Fotos", Icons.Default.Photo) {
                         onPickImage()
                         onDismiss()
                     }
-                    CapacitiesCircleButton("Archivos", Icons.Default.InsertDriveFile) {
+                    LumenCreateCircleButton("Archivos", Icons.Default.InsertDriveFile) {
                         onPickFile(); onDismiss()
                     }
-                    CapacitiesCircleButton("Portapapeles", Icons.Default.ContentPaste) {
+                    LumenCreateCircleButton("Portapapeles", Icons.Default.ContentPaste) {
                         if (!clipText.isNullOrBlank()) {
                             if (isUrl) {
                                 vm.addLink(clipText, "") { res ->
@@ -385,7 +385,7 @@ fun CreateModalBottomSheet(
 }
 
 @Composable
-fun CapacitiesActionCard(
+fun LumenCreateActionCard(
     title: String,
     icon: ImageVector,
     modifier: Modifier = Modifier,
@@ -430,7 +430,7 @@ fun CapacitiesActionCard(
 }
 
 @Composable
-fun CapacitiesCircleButton(
+fun LumenCreateCircleButton(
     label: String,
     icon: ImageVector,
     onClick: () -> Unit,

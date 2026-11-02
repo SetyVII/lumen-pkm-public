@@ -2,18 +2,22 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"lumen/server/internal/document"
 	"net/http"
 	"reflect"
-	"sort"
 	"strings"
 	"time"
 )
 
-const syncProtocolVersion = "lumen-sync/1"
+const syncProtocolVersion = "lumen-sync/2"
 
 type syncStatusResponse struct {
 	ServerID       string `json:"server_id"`
@@ -36,6 +40,8 @@ type syncDeleted struct {
 
 type syncPullResponse struct {
 	HeadSeq    int64         `json:"head_seq"`
+	NextSeq    int64         `json:"next_seq"`
+	HasMore    bool          `json:"has_more"`
 	Objects    []Object      `json:"objects"`
 	Types      []ObjectType  `json:"types"`
 	Tombstones []tombstone   `json:"tombstones"`
@@ -81,11 +87,26 @@ type syncOpError struct {
 	Error string `json:"error"`
 }
 
+type syncPushReceipt struct {
+	ReferenceIssues       []referenceTypeIssue `json:"reference_issues,omitempty"`
+	ReferenceIssuesCursor string               `json:"reference_issues_cursor,omitempty"`
+	OpID                  string               `json:"op_id"`
+	ObjectID              string               `json:"object_id"`
+	Revision              uint64               `json:"revision"`
+	PreviousRevision      uint64               `json:"previous_revision"`
+	Object                *Object              `json:"object,omitempty"`
+	Digest                string               `json:"-"`
+}
+type storedSyncReceipt struct {
+	Receipt syncPushReceipt `json:"receipt"`
+	Digest  string          `json:"digest"`
+}
 type syncPushResponse struct {
-	HeadSeq   int64          `json:"head_seq"`
-	Applied   []string       `json:"applied"`
-	Conflicts []syncConflict `json:"conflicts,omitempty"`
-	Errors    []syncOpError  `json:"errors,omitempty"`
+	Receipts  []syncPushReceipt `json:"receipts,omitempty"`
+	HeadSeq   int64             `json:"head_seq"`
+	Applied   []string          `json:"applied"`
+	Conflicts []syncConflict    `json:"conflicts,omitempty"`
+	Errors    []syncOpError     `json:"errors,omitempty"`
 }
 
 func (a *App) syncStatus(w http.ResponseWriter, r *http.Request) {
@@ -101,97 +122,6 @@ func (a *App) syncStatus(w http.ResponseWriter, r *http.Request) {
 		Protocol:       syncProtocolVersion,
 		TLSFingerprint: a.tlsFingerprint,
 	})
-}
-
-func (a *App) syncPull(w http.ResponseWriter, r *http.Request) {
-	var req syncPullRequest
-	if !decode(w, r, &req) {
-		return
-	}
-	if req.SinceSeq < 0 {
-		req.SinceSeq = 0
-	}
-	if req.MediaSinceDate != "" {
-		if d, err := time.Parse("2006-01-02", req.MediaSinceDate); err != nil || d.Format("2006-01-02") != req.MediaSinceDate {
-			jsonError(w, 400, "media_since_date must be YYYY-MM-DD")
-			return
-		}
-	}
-	head, err := a.store.HeadSeq()
-	if err != nil {
-		jsonError(w, 500, "Could not read sync sequence")
-		return
-	}
-	changes, err := a.store.ChangesSince(req.SinceSeq)
-	if err != nil {
-		jsonError(w, 500, "Could not read sync changes")
-		return
-	}
-	objects := map[string]Object{}
-	types := map[string]ObjectType{}
-	tombstones := map[string]tombstone{}
-	assets := map[string]Asset{}
-	deleted := map[string]syncDeleted{}
-	for _, change := range changes {
-		key := change.Kind + "/" + change.ID
-		if change.Op == "delete" {
-			deleted[key] = syncDeleted{Kind: change.Kind, ID: change.ID, Seq: change.Seq}
-			continue
-		}
-		switch change.Kind {
-		case "object":
-			if o, err := a.store.Object(change.ID); err == nil {
-				objects[o.ID] = o
-			} else {
-				deleted[key] = syncDeleted{Kind: change.Kind, ID: change.ID, Seq: change.Seq}
-			}
-		case "type":
-			if t, err := a.store.Type(change.ID); err == nil {
-				types[t.ID] = t
-			} else {
-				deleted[key] = syncDeleted{Kind: change.Kind, ID: change.ID, Seq: change.Seq}
-			}
-		case "tombstone":
-			var t tombstone
-			if a.store.Get("tombstone", change.ID, &t) == nil {
-				tombstones[t.ID] = t
-			}
-		case "asset":
-			var asset Asset
-			if a.store.Get("asset", change.ID, &asset) == nil {
-				assets[asset.ID] = asset
-			} else {
-				deleted[key] = syncDeleted{Kind: change.Kind, ID: change.ID, Seq: change.Seq}
-			}
-		}
-	}
-	resp := syncPullResponse{HeadSeq: head, Objects: []Object{}, Types: []ObjectType{}, Tombstones: []tombstone{}, Assets: []Asset{}, Deleted: []syncDeleted{}}
-	for _, o := range objects {
-		resp.Objects = append(resp.Objects, o)
-	}
-	for _, t := range types {
-		resp.Types = append(resp.Types, t)
-	}
-	for _, t := range tombstones {
-		resp.Tombstones = append(resp.Tombstones, t)
-	}
-	for _, asset := range assets {
-		resp.Assets = append(resp.Assets, asset)
-	}
-	for _, d := range deleted {
-		resp.Deleted = append(resp.Deleted, d)
-	}
-	sort.Slice(resp.Objects, func(i, j int) bool { return resp.Objects[i].ID < resp.Objects[j].ID })
-	sort.Slice(resp.Types, func(i, j int) bool { return resp.Types[i].ID < resp.Types[j].ID })
-	sort.Slice(resp.Tombstones, func(i, j int) bool { return resp.Tombstones[i].ID < resp.Tombstones[j].ID })
-	sort.Slice(resp.Assets, func(i, j int) bool { return resp.Assets[i].ID < resp.Assets[j].ID })
-	sort.Slice(resp.Deleted, func(i, j int) bool {
-		if resp.Deleted[i].Kind != resp.Deleted[j].Kind {
-			return resp.Deleted[i].Kind < resp.Deleted[j].Kind
-		}
-		return resp.Deleted[i].ID < resp.Deleted[j].ID
-	})
-	jsonResponse(w, 200, resp)
 }
 
 func (a *App) syncPush(w http.ResponseWriter, r *http.Request) {
@@ -215,6 +145,21 @@ func (a *App) syncPush(w http.ResponseWriter, r *http.Request) {
 			resp.Errors = append(resp.Errors, syncOpError{OpID: op.OpID, Error: "op_id must contain 8..128 characters"})
 			continue
 		}
+		rawOp, _ := json.Marshal(op)
+		sum := sha256.Sum256(rawOp)
+		digest := hex.EncodeToString(sum[:])
+		if stored, receiptErr := a.store.syncReceipt(op.OpID); receiptErr == nil {
+			if stored.Digest != digest {
+				resp.Errors = append(resp.Errors, syncOpError{OpID: op.OpID, Error: "op_id was used with different payload"})
+				continue
+			}
+			resp.Applied = append(resp.Applied, op.OpID)
+			resp.Receipts = append(resp.Receipts, stored.Receipt)
+			continue
+		} else if !errors.Is(receiptErr, sql.ErrNoRows) {
+			resp.Errors = append(resp.Errors, syncOpError{OpID: op.OpID, Error: "could not read receipt"})
+			continue
+		}
 		applied, err := a.store.SyncOpApplied(op.OpID)
 		if err != nil {
 			resp.Errors = append(resp.Errors, syncOpError{OpID: op.OpID, Error: "could not read idempotency record"})
@@ -226,18 +171,59 @@ func (a *App) syncPush(w http.ResponseWriter, r *http.Request) {
 		}
 		a.writeMu.Lock()
 		if again, againErr := a.store.SyncOpApplied(op.OpID); againErr == nil && again {
+			prior, receiptErr := a.store.syncReceipt(op.OpID)
 			a.writeMu.Unlock()
+			if receiptErr == nil && prior.Digest != digest {
+				resp.Errors = append(resp.Errors, syncOpError{OpID: op.OpID, Error: "op_id was used with different payload"})
+				continue
+			}
 			resp.Applied = append(resp.Applied, op.OpID)
+			if receiptErr == nil {
+				resp.Receipts = append(resp.Receipts, prior.Receipt)
+			}
 			continue
 		}
 		records, deletes, blobs, conflict, opErr := a.applySyncOperation(r.Context(), op)
 		if opErr == nil {
 			head, _ := a.store.HeadSeq()
-			records = append(records, Record{Kind: "sync_op", Value: SyncOpRecord{OpID: op.OpID, DeviceID: req.DeviceID, HeadSeq: head}})
-			opErr = a.store.PutBatchBlobs(records, deletes, blobs)
+			receipt := syncPushReceipt{OpID: op.OpID, ObjectID: op.ObjectID}
+			for _, record := range records {
+				if obj, ok := record.Value.(*Object); ok && record.Kind == "object" {
+					copy := cloneObject(*obj)
+					receipt.Object = &copy
+					receipt.ObjectID = obj.ID
+					receipt.Revision = obj.Revision
+					if previous, err := a.store.Object(obj.ID); err == nil {
+						receipt.PreviousRevision = previous.Revision
+					} else if !errors.Is(err, sql.ErrNoRows) {
+						opErr = errors.New("Could not read previous object revision")
+						break
+					}
+					break
+				}
+			}
+			if receipt.ObjectID == "" && op.Object != nil {
+				if obj, e := a.store.Object(op.Object.ID); e == nil {
+					receipt.ObjectID = obj.ID
+					receipt.Revision = obj.Revision
+					receipt.Object = &obj
+				}
+			}
+			if opErr == nil && receipt.Object != nil && receipt.Revision == 1 {
+				receipt.ReferenceIssues, receipt.ReferenceIssuesCursor, opErr = a.referenceTypeIssues(*receipt.Object, "")
+			}
+			if opErr == nil {
+				records = append(records, Record{Kind: "sync_receipt", ID: op.OpID, Value: storedSyncReceipt{receipt, digest}})
+				resp.Receipts = append(resp.Receipts, receipt)
+				records = append(records, Record{Kind: "sync_op", Value: SyncOpRecord{OpID: op.OpID, DeviceID: req.DeviceID, HeadSeq: head}})
+				opErr = a.store.PutBatchBlobs(records, deletes, blobs)
+			}
 		}
 		a.writeMu.Unlock()
 		if opErr != nil {
+			if len(resp.Receipts) > 0 && resp.Receipts[len(resp.Receipts)-1].OpID == op.OpID {
+				resp.Receipts = resp.Receipts[:len(resp.Receipts)-1]
+			}
 			resp.Errors = append(resp.Errors, syncOpError{OpID: op.OpID, Error: truncate(opErr.Error(), 300)})
 			continue
 		}
@@ -330,15 +316,11 @@ func (a *App) isPurged(id string) bool {
 	return a.store.Get("tombstone", id, &deleted) == nil
 }
 
-// validateSyncObject validates a mobile operation like the direct API, except
-// that relations whose target does not exist on the server yet are dropped
-// instead of failing the whole operation: a push batch can create the target
-// in a later operation, phones can be offline for days, and a relation must
-// never block its object forever. Tombstoned targets are already filtered by
-// filterTombstonedReferences; these are targets that never landed here.
+// validateSyncObject preserves pending offline relations while validating their
+// formats and every target whose live/trash type is already known. Only purged
+// references are removed, by filterPurgedReferences before validation.
 func (a *App) validateSyncObject(o *Object) error {
-	a.dropUnresolvableRelations(o)
-	if err := a.validateObject(o); err == nil {
+	if err := a.validateObjectReferences(o, true); err == nil {
 		return nil
 	}
 	// A mobile put cannot ask the user to rename anything. When the only
@@ -352,76 +334,12 @@ func (a *App) validateSyncObject(o *Object) error {
 				candidate := fmt.Sprintf("%s (%d)", base, suffix)
 				if holder := a.store.TitleOwner(candidate); holder == "" || holder == o.ID {
 					o.Title = candidate
-					return a.validateObject(o)
+					return a.validateObjectReferences(o, true)
 				}
 			}
 		}
 	}
-	return a.validateObject(o)
-}
-
-func (a *App) dropUnresolvableRelations(o *Object) {
-	if len(o.Links) > 0 {
-		clean := make([]string, 0, len(o.Links))
-		for _, id := range o.Links {
-			if id == o.ID {
-				continue
-			}
-			// Live targets always stay; trashed targets stay restorable
-			// (parity trash semantics); only purged and never-landed
-			// targets are dropped.
-			if _, err := a.store.Object(id); err != nil && !a.store.Has("trash", id) {
-				continue
-			}
-			clean = append(clean, id)
-		}
-		o.Links = clean
-	}
-	typ, err := a.store.Type(o.TypeID)
-	if err != nil {
-		return
-	}
-	for _, raw := range typ.Properties {
-		schema, ok := raw.(map[string]any)
-		if !ok || schema["type"] != "object" {
-			continue
-		}
-		key := schemaKey(schema)
-		value, exists := o.Properties[key]
-		if !exists || value == nil || value == "" {
-			continue
-		}
-		switch v := value.(type) {
-		case string:
-			if v != o.ID {
-				if _, err := a.store.Object(v); err != nil && !a.store.Has("trash", v) {
-					delete(o.Properties, key)
-				}
-			}
-		case []any:
-			clean := make([]any, 0, len(v))
-			for _, entry := range v {
-				id, ok := entry.(string)
-				if !ok {
-					continue
-				}
-				if id != o.ID {
-					// Live targets always stay; trashed targets stay
-					// restorable (parity trash semantics); only purged and
-					// never-landed targets are dropped.
-					if _, err := a.store.Object(id); err != nil && !a.store.Has("trash", id) {
-						continue
-					}
-				}
-				clean = append(clean, id)
-			}
-			if len(clean) == 0 {
-				delete(o.Properties, key)
-			} else {
-				o.Properties[key] = clean
-			}
-		}
-	}
+	return a.validateObjectReferences(o, true)
 }
 
 // filterPurgedReferences drops relations to objects that were permanently
@@ -433,16 +351,42 @@ func (a *App) filterPurgedReferences(o *Object) error {
 	if len(o.Links) > 0 {
 		clean := make([]string, 0, len(o.Links))
 		for _, id := range o.Links {
-			if a.isPurged(id) {
+			purged, err := a.purgedReference(id)
+			if err != nil {
+				return err
+			}
+			if purged {
 				continue
 			}
 			clean = append(clean, id)
 		}
 		o.Links = clean
 	}
+	if o.Document != nil {
+		purgedIDs := map[string]string{}
+		checked := map[string]bool{}
+		for _, ref := range document.References(*o.Document) {
+			if ref.ObjectID == "" || checked[ref.ObjectID] {
+				continue
+			}
+			checked[ref.ObjectID] = true
+			purged, err := a.purgedReference(ref.ObjectID)
+			if err != nil {
+				return err
+			}
+			if purged {
+				purgedIDs[ref.ObjectID] = ""
+			}
+		}
+		removeCanonicalReferences(o, purgedIDs, nil)
+	}
+
 	typ, err := a.store.Type(o.TypeID)
 	if err != nil {
-		return nil
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
 	}
 	for _, raw := range typ.Properties {
 		schema, ok := raw.(map[string]any)
@@ -456,15 +400,25 @@ func (a *App) filterPurgedReferences(o *Object) error {
 		}
 		switch v := value.(type) {
 		case string:
-			if a.isPurged(v) {
+			purged, err := a.purgedReference(v)
+			if err != nil {
+				return err
+			}
+			if purged {
 				delete(o.Properties, key)
 			}
 		case []any:
 			clean := make([]any, 0, len(v))
 			for _, entry := range v {
 				id, ok := entry.(string)
-				if ok && a.isPurged(id) {
-					continue
+				if ok {
+					purged, err := a.purgedReference(id)
+					if err != nil {
+						return err
+					}
+					if purged {
+						continue
+					}
 				}
 				clean = append(clean, entry)
 			}
@@ -557,6 +511,9 @@ func (a *App) applySyncPut(ctx context.Context, op syncOperation) ([]Record, [][
 	if incoming.ID == "" {
 		incoming.ID = newID()
 	}
+	if !validObjectReferenceID(incoming.ID) {
+		return nil, nil, nil, nil, errors.New("Object identity is invalid")
+	}
 	if incoming.TypeID == "" {
 		incoming.TypeID = "note"
 	}
@@ -585,13 +542,58 @@ func (a *App) applySyncPut(ctx context.Context, op syncOperation) ([]Record, [][
 		incoming.Revision = 0
 		incoming.Incarnation = ""
 		incoming.SyncStatus, incoming.SyncError = "synced", ""
+		if err := a.validateMediaCreation(&incoming, true); err != nil {
+			return nil, nil, nil, nil, err
+		}
 		if err := a.validateSyncObject(&incoming); err != nil {
 			return nil, nil, nil, nil, err
 		}
 		return a.prepareSave(&incoming), saveCleanup(incoming.ID), nil, nil, nil
 	}
-	_ = a.filterPurgedReferences(&existing)
+	if err := a.filterPurgedReferences(&existing); err != nil {
+		return nil, nil, nil, nil, err
+	}
 
+	if incoming.Document != nil || existing.Document != nil {
+		if incoming.Document == nil {
+			return nil, nil, nil, nil, errors.New("canonical document is required")
+		}
+		base := op.BaseRevision
+		if base == 0 {
+			base = incoming.Revision
+		}
+		if !op.Append && base != existing.Revision {
+			return nil, nil, nil, nil, fmt.Errorf("document_conflict: expected revision %d; current %d", base, existing.Revision)
+		}
+		merged := cloneObject(incoming)
+		merged.CreatedAt = existing.CreatedAt
+		merged.Incarnation = existing.Incarnation
+		merged.Revision = existing.Revision
+		if op.Append {
+			if incoming.TypeID != "journal" {
+				return nil, nil, nil, nil, errors.New("document append requires journal")
+			}
+			if existing.Document == nil {
+				return nil, nil, nil, nil, errors.New("journal has no canonical document")
+			}
+			joined := *cloneDocument(existing.Document)
+			joined.Blocks = append(joined.Blocks, incoming.Document.Blocks...)
+			merged = cloneObject(existing)
+			merged.Document = &joined
+			merged.Properties = mergeProperties(existing.Properties, incoming.Properties)
+			merged.Links = mergeLinks(existing.Links, incoming.Links)
+		}
+		if err := a.validateSyncObject(&merged); err != nil {
+			return nil, nil, nil, nil, err
+		}
+		if reflect.DeepEqual(existing.Document, merged.Document) && reflect.DeepEqual(existing.Properties, merged.Properties) && existing.Title == merged.Title && existing.TypeID == merged.TypeID && sameStrings(existing.Links, merged.Links) {
+			return nil, nil, nil, nil, nil
+		}
+		merged.UpdatedAt = now()
+		records := a.prepareSave(&merged)
+		records = append(records, a.templateDefaultCleanup(existing, merged)...)
+		return records, saveCleanup(merged.ID), nil, nil, nil
+	}
 	base := op.BaseRevision
 	if base == 0 {
 		base = incoming.Revision
@@ -762,6 +764,27 @@ func (a *App) applySyncAsset(ctx context.Context, op syncOperation) ([]Record, [
 	if asset.CreatedAt == "" {
 		asset.CreatedAt = now()
 	}
+	var previous Asset
+	if err := a.store.Get("asset", asset.ID, &previous); err == nil {
+		sameOwner := previous.ObjectID == asset.ObjectID || (asset.ObjectID == "" && op.Asset.CreateMediaObject && previous.ObjectID == previous.MediaObjectID)
+		if previous.Size != len(data) || !sameOwner {
+			return nil, nil, nil, nil, errors.New("Asset identity is immutable; upload a different file under a new asset_id")
+		}
+		storedBytes, err := a.store.Blob(asset.ID)
+		if err != nil {
+			return nil, nil, nil, nil, errors.New("Could not read existing asset")
+		}
+		if sha256.Sum256(storedBytes) != sha256.Sum256(data) {
+			return nil, nil, nil, nil, errors.New("Asset identity is immutable; upload a different file under a new asset_id")
+		}
+		asset = previous
+		// A resend of already committed media is a no-op, including history.
+		if !op.Asset.CreateMediaObject || asset.MediaObjectID != "" {
+			return nil, nil, nil, nil, nil
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, nil, nil, errors.New("Could not read existing asset")
+	}
 	records := []Record{}
 	var media Object
 	if op.Asset.CreateMediaObject {
@@ -773,6 +796,12 @@ func (a *App) applySyncAsset(ctx context.Context, op syncOperation) ([]Record, [
 	}
 	if asset.ObjectID != "" {
 		if owner, err := a.store.Object(asset.ObjectID); err == nil {
+			if mediaSourceID(owner) == asset.ID && (owner.TypeID == "image" || owner.TypeID == "pdf") {
+				if !mediaMatchesObject(owner, asset) {
+					return nil, nil, nil, nil, errors.New("Media source has the wrong file type")
+				}
+				owner.Properties["media_state"] = "ready"
+			}
 			if owner.Properties == nil {
 				owner.Properties = map[string]any{}
 			}

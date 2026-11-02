@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -136,7 +137,7 @@ func TestConvertWritesUnmovableValuesIntoContent(t *testing.T) {
 		},
 	}))
 	converted := objectFrom(t, api(t, app, "POST", "/v1/objects/"+o.ID+"/convert", map[string]any{"target_type_id": targetType.ID}))
-	want := "Keep me\n\nProperty pages: 124\nProperty status: open\nProperty tags: Tag one, Tag two"
+	want := "Keep me\nProperty pages: 124\nProperty status: open\nProperty tags: Tag one, Tag two"
 	if converted.Content != want {
 		t.Fatalf("content fallback = %q, want %q", converted.Content, want)
 	}
@@ -283,7 +284,7 @@ func TestConvertKeepsRichFormatsWhenNothingIsAppended(t *testing.T) {
 	sourceType := makeType(t, app, "Article", []any{map[string]any{"id": "pages", "type": "number"}})
 	targetType := makeType(t, app, "Report", []any{map[string]any{"id": "pages", "type": "number"}})
 	o := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": sourceType.ID, "title": "Rich", "content": "Body",
+		"type_id": sourceType.ID, "title": "Rich", "document": documentFixture("Body"),
 		"properties": map[string]any{
 			"pages": 3, "blocks": []any{map[string]any{"id": "b1", "text": "Body"}}, "rich_text": "<p>Body</p>",
 		},
@@ -292,8 +293,8 @@ func TestConvertKeepsRichFormatsWhenNothingIsAppended(t *testing.T) {
 	if converted.Content != "Body" {
 		t.Fatalf("content changed without leftovers: %q", converted.Content)
 	}
-	if converted.Properties["blocks"] == nil || converted.Properties["rich_text"] != "<p>Body</p>" {
-		t.Fatalf("rich formats were dropped without a content change: %#v", converted.Properties)
+	if !reflect.DeepEqual(converted.Document, o.Document) {
+		t.Fatal("conversion changed canonical formatting without leftovers")
 	}
 }
 

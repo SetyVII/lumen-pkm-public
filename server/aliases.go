@@ -6,15 +6,6 @@ import (
 	"strings"
 )
 
-// Aliases are alternate names for an object. Capacities exposes them as a
-// default property available on every object rather than as a per-type schema
-// entry (https://docs.capacities.io/reference/properties#aliases), so the
-// server owns the key instead of the type definitions.
-//
-// Storage: properties["aliases"] is a JSON array of strings, the same shape
-// tags uses for its object IDs. Riding on the existing property map keeps the
-// store schema untouched: objects without aliases simply have no key, and
-// clients that do not know the property keep ignoring it.
 const (
 	aliasesPropertyKey  = "aliases"
 	maxAliasesPerObject = 50

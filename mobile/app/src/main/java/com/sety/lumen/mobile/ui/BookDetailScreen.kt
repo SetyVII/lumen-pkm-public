@@ -340,21 +340,7 @@ fun BookDetailScreen(
                             }
                         }
 
-                        EditorKeyboardBar(
-                            vm = vm,
-                            onInsertText = { snippet ->
-                                readingNotes = insertSnippet(readingNotes, snippet)
-                                vm.updateContent(obj.id, readingNotes.text)
-                            },
-                            onIndent = {
-                                readingNotes = indentLine(readingNotes)
-                                vm.updateContent(obj.id, readingNotes.text)
-                            },
-                            onOutdent = {
-                                readingNotes = outdentLine(readingNotes)
-                                vm.updateContent(obj.id, readingNotes.text)
-                            },
-                        )
+                        // Canonical block controls are owned by CanonicalDocumentEditor.
                     }
                 }
                 2 -> {

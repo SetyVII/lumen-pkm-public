@@ -12,16 +12,16 @@ func TestScenarioDeleteRegretPurgeJourney(t *testing.T) {
 	app, _, _ := makeApp(t)
 
 	person := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "person", "title": "Grace Hopper", "content": "Compiler pioneer",
+		"type_id": "person", "title": "Grace Hopper", "document": documentFixture("Compiler pioneer"),
 	}))
-	person = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+person.ID, map[string]any{
-		"content": "Compiler pioneer and COBOL advocate",
-	}))
+	person = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+person.ID, documentPatchPayload(t, app, person.ID, map[string]any{
+		"document": documentFixture("Compiler pioneer and COBOL advocate"),
+	})))
 	if versions := versionSummaries(t, app, person.ID); len(versions) != 1 {
 		t.Fatalf("fixture did not create version history: %+v", versions)
 	}
 	page := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "note", "title": "Compiler notes", "content": "Grace invented the compiler",
+		"type_id": "note", "title": "Compiler notes", "document": documentFixture("Grace invented the compiler"),
 		"links": []string{person.ID},
 	}))
 	collection := createCollection(t, app, "People I quote", "person", []string{person.ID})

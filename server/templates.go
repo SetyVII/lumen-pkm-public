@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"lumen/server/internal/document"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -174,7 +175,14 @@ func (a *App) buildObjectFromTemplate(tpl Object, title, date string) (Object, e
 		}
 	}
 	links := append([]string{}, tpl.Links...)
-	return Object{
+	var canonical *document.Document
+	if tpl.Document != nil {
+		copied := freshCanonicalDocument(*tpl.Document)
+		canonical = &copied
+		delete(properties, "blocks")
+		delete(properties, "rich_text")
+	}
+	return Object{Document: canonical,
 		TypeID:     tpl.TypeID,
 		Title:      title,
 		Content:    tpl.Content,
@@ -306,6 +314,7 @@ func (a *App) applyJournalDefaultTemplate(o *Object, date string) error {
 	if err != nil {
 		return err
 	}
+	o.Document = cloneDocument(built.Document)
 	o.Content = built.Content
 	o.Properties = built.Properties
 	o.Links = built.Links

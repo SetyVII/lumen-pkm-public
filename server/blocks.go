@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"lumen/server/internal/document"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -27,6 +30,7 @@ type blockReference struct {
 }
 
 func (a *App) registerBlockRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /v1/objects/{id}/reference-issues", a.readReferenceIssues)
 	mux.HandleFunc("GET /v1/blocks", a.searchBlocks)
 	mux.HandleFunc("GET /v1/blocks/{block_id}", a.resolveBlock)
 	mux.HandleFunc("GET /v1/blocks/{block_id}/references", a.blockReferences)
@@ -58,11 +62,37 @@ func walkBlocks(list []any, depth int, visit func(map[string]any)) {
 	}
 }
 
-func rawObjectBlocks(o Object) []any { blocks, _ := o.Properties["blocks"].([]any); return blocks }
+func rawObjectBlocks(o Object) []any {
+	if o.Document != nil {
+		data, _ := json.Marshal(o.Document.Blocks)
+		var out []any
+		_ = json.Unmarshal(data, &out)
+		return out
+	}
+	blocks, _ := o.Properties["blocks"].([]any)
+	return blocks
+}
 
 func blockSearchText(block map[string]any) string {
 	text, _ := block["text"].(string)
 	parts := []string{text}
+	if content, ok := block["content"].([]any); ok {
+		for _, raw := range content {
+			in, _ := raw.(map[string]any)
+			for _, key := range []string{"text", "label", "latex"} {
+				if v, ok := in[key].(string); ok {
+					parts = append(parts, v)
+				}
+			}
+		}
+	}
+	if attrs, ok := block["attrs"].(map[string]any); ok {
+		for _, key := range []string{"source", "caption"} {
+			if v, ok := attrs[key].(string); ok {
+				parts = append(parts, v)
+			}
+		}
+	}
 	appendRuns := func(raw any) {
 		runs, _ := raw.([]any)
 		for _, entry := range runs {
@@ -146,6 +176,10 @@ func (a *App) resolveBlock(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, hit)
 }
 
+// canonicalNodeSearchText covers this node's own text only. Including children
+// here would report every ancestor as a duplicate hit for a table-cell match.
+func canonicalNodeSearchText(n document.Node) string { return document.OwnText(n) }
+
 func (a *App) searchBlocks(w http.ResponseWriter, r *http.Request) {
 	limit := 50
 	if raw := r.URL.Query().Get("limit"); raw != "" {
@@ -159,25 +193,67 @@ func (a *App) searchBlocks(w http.ResponseWriter, r *http.Request) {
 	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 	objectID := r.URL.Query().Get("object_id")
 	hits := []blockHit{}
-	a.writeMu.Lock()
-	defer a.writeMu.Unlock()
-	err := a.store.ObjectBatches(100, func(batch []Object) error {
-		for _, o := range batch {
-			if isTemplateObject(o) || (objectID != "" && o.ID != objectID) {
-				continue
-			}
-			walkBlocks(rawObjectBlocks(o), 0, func(b map[string]any) {
-				text := blockSearchText(b)
-				if len(hits) < limit && strings.Contains(strings.ToLower(text), q) {
-					hits = append(hits, blockHit{o.ID, o.Title, o.Revision, b})
-				}
-			})
+	collect := func(o Object) {
+		if isTemplateObject(o) {
+			return
 		}
-		return nil
-	})
-	if err != nil {
-		jsonError(w, 500, "Could not search blocks")
-		return
+		if o.Document != nil {
+			var visit func([]document.Node)
+			visit = func(nodes []document.Node) {
+				for _, n := range nodes {
+					if len(hits) >= limit || r.Context().Err() != nil {
+						return
+					}
+					if strings.Contains(strings.ToLower(canonicalNodeSearchText(n)), q) {
+						// Materialize JSON maps only for the bounded result set, never for the
+						// full catalog. Unknown attrs and the selected subtree remain lossless.
+						raw, _ := json.Marshal(n)
+						var block map[string]any
+						_ = json.Unmarshal(raw, &block)
+						hits = append(hits, blockHit{o.ID, o.Title, o.Revision, block})
+					}
+					visit(n.Children)
+				}
+			}
+			visit(o.Document.Blocks)
+			return
+		}
+		walkBlocks(rawObjectBlocks(o), 0, func(block map[string]any) {
+			if len(hits) < limit && strings.Contains(strings.ToLower(blockSearchText(block)), q) {
+				hits = append(hits, blockHit{o.ID, o.Title, o.Revision, block})
+			}
+		})
+	}
+	if objectID != "" {
+		o, err := a.store.Object(objectID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			jsonError(w, 500, "Could not search blocks")
+			return
+		}
+		if err == nil {
+			collect(o)
+		}
+	} else {
+		stopped := errors.New("block search result limit reached")
+		// Read-only discovery returns revisions per hit; it does not need the global
+		// writer lock or a catalog-wide snapshot. Close each small SQLite batch so
+		// concurrent commits can progress between batches on the single connection.
+		err := a.store.ObjectBatches(8, func(batch []Object) error {
+			if err := r.Context().Err(); err != nil {
+				return err
+			}
+			for _, o := range batch {
+				collect(o)
+				if len(hits) >= limit {
+					return stopped
+				}
+			}
+			return nil
+		})
+		if err != nil && !errors.Is(err, stopped) {
+			jsonError(w, 500, "Could not search blocks")
+			return
+		}
 	}
 	jsonResponse(w, 200, map[string]any{"results": hits})
 }
@@ -187,6 +263,9 @@ func (a *App) searchBlocks(w http.ResponseWriter, r *http.Request) {
 func hasBlockHref(value any, id string) bool {
 	switch v := value.(type) {
 	case map[string]any:
+		if v["type"] == "block_ref" && v["block_id"] == id {
+			return true
+		}
 		if href, ok := v["href"].(string); ok {
 			u, err := url.Parse(href)
 			if err == nil && u.Scheme == "lumen" && u.Host == "block" && strings.TrimPrefix(u.Path, "/") == id {
@@ -212,13 +291,23 @@ func (a *App) blockReferences(w http.ResponseWriter, r *http.Request) {
 	a.writeMu.Lock()
 	defer a.writeMu.Unlock()
 	id := r.PathValue("block_id")
-	if _, err := a.findBlock(id, r.URL.Query().Get("object_id")); err != nil {
+	hit, lookupErr := a.findBlock(id, r.URL.Query().Get("object_id"))
+	if err := lookupErr; err != nil {
 		writeCoreError(w, err)
 		return
 	}
 	refs := []blockReference{}
 	err := a.store.ObjectBatches(100, func(batch []Object) error {
 		for _, o := range batch {
+			if o.Document != nil {
+				for _, ref := range document.References(*o.Document) {
+					if ref.Kind == "block" && ref.BlockID == id && ref.ObjectID == hit.ObjectID {
+						node, _ := document.Find(*o.Document, ref.NodeID)
+						refs = append(refs, blockReference{o.ID, o.Title, ref.NodeID, node.Type == "object_embed"})
+					}
+				}
+				continue
+			}
 			walkBlocks(rawObjectBlocks(o), 0, func(b map[string]any) {
 				if hasBlockHref(b, id) {
 					bid, _ := b["id"].(string)
@@ -364,6 +453,7 @@ func replaceBlockInTree(list []any, id string, replacement map[string]any, depth
 func (a *App) editBlocks(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		BaseRevision uint64         `json:"base_revision"`
+		OperationID  string         `json:"op_id"`
 		Block        map[string]any `json:"block"`
 		Position     *int           `json:"position"`
 	}
@@ -383,6 +473,43 @@ func (a *App) editBlocks(w http.ResponseWriter, r *http.Request) {
 	}
 	if o.Revision != req.BaseRevision {
 		jsonResponse(w, 409, map[string]any{"error": "conflict", "current": o})
+		return
+	}
+	if o.Document != nil {
+		c := document.Command{NodeID: r.PathValue("block_id")}
+		if r.Method == http.MethodDelete {
+			c.Type = "delete"
+		} else {
+			data, _ := json.Marshal(req.Block)
+			dec := json.NewDecoder(bytes.NewReader(data))
+			dec.DisallowUnknownFields()
+			var n document.Node
+			if err := dec.Decode(&n); err != nil {
+				jsonError(w, 400, err.Error())
+				return
+			}
+			c.Node = &n
+			if r.Method == http.MethodPost {
+				c.Type = "insert"
+				if c.Node.ID == "" {
+					jsonError(w, 400, "block.id is required")
+					return
+				}
+				c.Position = len(o.Document.Blocks)
+				if req.Position != nil {
+					c.Position = *req.Position
+				}
+			} else {
+				c.Type = "replace"
+				c.Node.ID = c.NodeID
+			}
+		}
+		updated, err := a.commitDocument(o.ID, req.BaseRevision, req.OperationID, nil, []document.Command{c})
+		if err != nil {
+			writeCoreError(w, err)
+			return
+		}
+		jsonResponse(w, 200, map[string]any{"object_id": updated.ID, "revision": updated.Revision, "document": updated.Document, "blocks": rawObjectBlocks(updated)})
 		return
 	}
 	blocks := rawObjectBlocks(o)

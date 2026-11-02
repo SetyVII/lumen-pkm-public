@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"lumen/server/internal/document"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -171,6 +172,7 @@ func uploadTestAsset(t *testing.T, app *App, objectID, name string, data []byte)
 	req := httptest.NewRequest("POST", "/v1/assets", body)
 	req.Header.Set("Authorization", "Bearer "+testToken)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("X-Lumen-Document-Version", "2")
 	rr := httptest.NewRecorder()
 	app.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusCreated {
@@ -255,18 +257,13 @@ func TestExportRoundTrip(t *testing.T) {
 		t.Fatal("upload did not create a reusable media object")
 	}
 	book = objectFrom(t, api(t, app, "GET", "/v1/objects/"+book.ID, nil))
-	props := book.Properties
-	props["blocks"] = []any{
-		map[string]any{"id": newID(), "type": "heading", "text": "Deep Work", "level": 1, "runs": []any{map[string]any{"text": "Deep Work"}}},
-		map[string]any{"id": newID(), "type": "paragraph", "text": "See Linked Note", "runs": []any{
-			map[string]any{"text": "See "},
-			map[string]any{"text": "Linked Note", "href": "lumen://object/" + note.ID, "object_id": note.ID, "type_id": "note"},
-		}},
-		map[string]any{"id": newID(), "type": "paragraph", "text": "\uFFFC", "runs": []any{
-			map[string]any{"text": "\uFFFC", "type": "image", "image_name": "lumen://image/" + asset.MediaObjectID, "width": 10.0, "height": 10.0},
-		}},
-	}
-	book = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+book.ID, map[string]any{"properties": props}))
+	bookDoc := document.Document{SchemaVersion: 2, Blocks: []document.Node{
+		{ID: newID(), Type: "heading", Attrs: map[string]any{"level": 1}, Content: []document.Inline{{Type: "text", Text: "Deep Work"}}},
+		{ID: newID(), Type: "paragraph", Content: []document.Inline{{Type: "text", Text: "See "}, {Type: "object_ref", ObjectID: note.ID, Label: "Linked Note"}}},
+		{ID: newID(), Type: "image", Attrs: map[string]any{"asset_id": asset.ID, "object_id": asset.MediaObjectID, "width": 10, "height": 10}},
+	}}
+	book = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+book.ID, documentPatchPayload(t, app, book.ID, map[string]any{"document": bookDoc})))
+
 	template := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
 		"type_id": "book", "title": "Book Template",
 		"properties": map[string]any{"is_template": true, "author": "Template Author"},
@@ -508,13 +505,8 @@ func TestExportAssetsOptionAndBytes(t *testing.T) {
 	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4}
 	asset := uploadTestAsset(t, app, book.ID, "figure.png", png)
 	book = objectFrom(t, api(t, app, "GET", "/v1/objects/"+book.ID, nil))
-	props := book.Properties
-	props["blocks"] = []any{map[string]any{
-		"id": newID(), "type": "paragraph", "text": "\uFFFC", "runs": []any{
-			map[string]any{"text": "\uFFFC", "type": "image", "image_name": "lumen://image/" + asset.MediaObjectID},
-		},
-	}}
-	book = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+book.ID, map[string]any{"properties": props}))
+	imageDoc := document.Document{SchemaVersion: 2, Blocks: []document.Node{{ID: newID(), Type: "image", Attrs: map[string]any{"asset_id": asset.ID, "object_id": asset.MediaObjectID}}}}
+	book = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+book.ID, documentPatchPayload(t, app, book.ID, map[string]any{"document": imageDoc})))
 
 	entries := exportEntries(t, app, "GET", "/v1/export", nil)
 	assetPath := "assets/" + exportAssetFilename(asset)
@@ -761,18 +753,18 @@ func TestExportGETAndPOSTEquivalent(t *testing.T) {
 	}
 }
 
-func TestExportRichTextFallback(t *testing.T) {
+func TestExportCanonicalRichMarksAndPlainText(t *testing.T) {
 	app, _, _ := makeApp(t)
 	rich := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
 		"type_id": "note", "title": "Rich Only",
-		"properties": map[string]any{"rich_text": "<p>Hello <b>world</b></p>"},
+		"document": document.Document{SchemaVersion: 2, Blocks: []document.Node{{ID: newID(), Type: "paragraph", Content: []document.Inline{{Type: "text", Text: "Hello "}, {Type: "text", Text: "world", Marks: map[string]any{"bold": true}}}}}},
 	}))
 	plain := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "note", "title": "Plain Only", "content": "Plain body",
+		"type_id": "note", "title": "Plain Only", "document": document.Document{SchemaVersion: 2, Blocks: []document.Node{{ID: newID(), Type: "paragraph", Content: []document.Inline{{Type: "text", Text: "Plain body"}}}}},
 	}))
 	entries := exportEntries(t, app, "GET", "/v1/export", nil)
 	_, richBody := frontMatterBody(t, objectEntry(t, entries, app, rich))
-	if strings.TrimSpace(richBody) != "Hello world" {
+	if strings.TrimSpace(richBody) != "Hello **world**" {
 		t.Fatalf("rich_text fallback = %q", richBody)
 	}
 	_, plainBody := frontMatterBody(t, objectEntry(t, entries, app, plain))
@@ -784,19 +776,15 @@ func TestExportRichTextFallback(t *testing.T) {
 func TestExportTableAndColumnLinks(t *testing.T) {
 	app, _, _ := makeApp(t)
 	target := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Target"}))
-	owner := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "book", "title": "Nested Links",
-		"properties": map[string]any{"blocks": []any{
-			map[string]any{"id": newID(), "type": "table", "text": "", "runs": []any{}, "rows": []any{
-				[]any{map[string]any{"runs": []any{map[string]any{"text": "Target", "href": "lumen://object/" + target.ID, "object_id": target.ID}}}},
-			}},
-			map[string]any{"id": newID(), "type": "columns", "text": "", "runs": []any{}, "columns": []any{
-				[]any{map[string]any{"id": newID(), "type": "paragraph", "text": "Nested", "runs": []any{
-					map[string]any{"text": "Nested", "href": "lumen://object/" + target.ID, "object_id": target.ID},
-				}}},
-			}},
-		}},
-	}))
+	refParagraph := func(label string) document.Node {
+		return document.Node{ID: newID(), Type: "paragraph", Content: []document.Inline{{Type: "object_ref", ObjectID: target.ID, Label: label}}}
+	}
+	ownerDoc := document.Document{SchemaVersion: 2, Blocks: []document.Node{
+		{ID: newID(), Type: "table", Attrs: map[string]any{"columns": []any{map[string]any{"id": newID(), "width": 180}}}, Children: []document.Node{{ID: newID(), Type: "table_row", Children: []document.Node{{ID: newID(), Type: "table_cell", Children: []document.Node{refParagraph("Target")}}}}}},
+		{ID: newID(), Type: "columns", Children: []document.Node{{ID: newID(), Type: "column", Attrs: map[string]any{"width": 1}, Children: []document.Node{refParagraph("Nested")}}}},
+	}}
+	owner := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "book", "title": "Nested Links", "document": ownerDoc}))
+
 	entries := exportEntries(t, app, "GET", "/v1/export", nil)
 	_, body := frontMatterBody(t, objectEntry(t, entries, app, owner))
 	link := "../notes/" + exportObjectFilename(target)

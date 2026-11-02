@@ -1,0 +1,302 @@
+{
+  "input": {
+    "schema_version": 2,
+    "blocks": [
+      {
+        "id": "table",
+        "type": "table",
+        "attrs": {
+          "columns": [
+            {
+              "id": "name-column",
+              "width": 180
+            },
+            {
+              "id": "value-column",
+              "width": 96
+            }
+          ]
+        },
+        "children": [
+          {
+            "id": "row-0",
+            "type": "table_row",
+            "attrs": {
+              "header": true
+            },
+            "children": [
+              {
+                "id": "cell-0-0",
+                "type": "table_cell",
+                "children": [
+                  {
+                    "id": "cell-text-0-0",
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Nombre"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "cell-0-1",
+                "type": "table_cell",
+                "children": [
+                  {
+                    "id": "cell-text-0-1",
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Valor"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "row-1",
+            "type": "table_row",
+            "attrs": {
+              "header": false
+            },
+            "children": [
+              {
+                "id": "cell-1-0",
+                "type": "table_cell",
+                "children": [
+                  {
+                    "id": "cell-text-1-0",
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Ana"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "cell-1-1",
+                "type": "table_cell",
+                "children": [
+                  {
+                    "id": "cell-text-1-1",
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "10"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "row-2",
+            "type": "table_row",
+            "attrs": {
+              "header": false
+            },
+            "children": [
+              {
+                "id": "cell-2-0",
+                "type": "table_cell",
+                "children": [
+                  {
+                    "id": "cell-text-2-0",
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Luis"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "cell-2-1",
+                "type": "table_cell",
+                "children": [
+                  {
+                    "id": "cell-text-2-1",
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "2"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "commands": [
+    {
+      "type": "table_set_width",
+      "node_id": "table",
+      "column_id": "value-column",
+      "width": 200
+    }
+  ],
+  "expected": {
+    "schema_version": 2,
+    "blocks": [
+      {
+        "id": "table",
+        "type": "table",
+        "attrs": {
+          "columns": [
+            {
+              "id": "name-column",
+              "width": 180
+            },
+            {
+              "id": "value-column",
+              "width": 200
+            }
+          ]
+        },
+        "children": [
+          {
+            "id": "row-0",
+            "type": "table_row",
+            "attrs": {
+              "header": true
+            },
+            "children": [
+              {
+                "id": "cell-0-0",
+                "type": "table_cell",
+                "children": [
+                  {
+                    "id": "cell-text-0-0",
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Nombre"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "cell-0-1",
+                "type": "table_cell",
+                "children": [
+                  {
+                    "id": "cell-text-0-1",
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Valor"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "row-1",
+            "type": "table_row",
+            "attrs": {
+              "header": false
+            },
+            "children": [
+              {
+                "id": "cell-1-0",
+                "type": "table_cell",
+                "children": [
+                  {
+                    "id": "cell-text-1-0",
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Ana"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "cell-1-1",
+                "type": "table_cell",
+                "children": [
+                  {
+                    "id": "cell-text-1-1",
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "10"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "row-2",
+            "type": "table_row",
+            "attrs": {
+              "header": false
+            },
+            "children": [
+              {
+                "id": "cell-2-0",
+                "type": "table_cell",
+                "children": [
+                  {
+                    "id": "cell-text-2-0",
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Luis"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "cell-2-1",
+                "type": "table_cell",
+                "children": [
+                  {
+                    "id": "cell-text-2-1",
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "2"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

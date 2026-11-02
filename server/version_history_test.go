@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -35,7 +36,7 @@ func TestVersionHistorySnapshotsPreviousState(t *testing.T) {
 	app, _, _ := makeApp(t)
 	target := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Version target"}))
 	o := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "note", "title": "Versioned note", "content": "first version",
+		"type_id": "note", "title": "Versioned note", "document": documentFixture("first version"),
 		"properties": map[string]any{
 			"summary": "first summary",
 			"meta":    map[string]any{"nested": true},
@@ -50,7 +51,7 @@ func TestVersionHistorySnapshotsPreviousState(t *testing.T) {
 		t.Fatalf("creating an object must not create a snapshot: %+v", versions)
 	}
 
-	o = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, map[string]any{"content": "second version"}))
+	o = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, documentPatchPayload(t, app, o.ID, map[string]any{"document": documentFixture("second version")})))
 	if o.Revision != 2 {
 		t.Fatalf("patch revision = %d", o.Revision)
 	}
@@ -66,6 +67,10 @@ func TestVersionHistorySnapshotsPreviousState(t *testing.T) {
 	}
 
 	snapshot := versionSnapshot(t, app, o.ID, 1)
+	storedSnapshot, err := app.store.Version(o.ID, 1)
+	if err != nil || storedSnapshot.Document == nil || !reflect.DeepEqual(*storedSnapshot.Document, documentFixture("first version")) {
+		t.Fatalf("snapshot lost canonical document or marks: %+v, %v", storedSnapshot.Document, err)
+	}
 	if snapshot.Content != "first version" || snapshot.Title != "Versioned note" || snapshot.TypeID != "note" {
 		t.Fatalf("snapshot lost the old document: %+v", snapshot)
 	}
@@ -89,9 +94,9 @@ func TestVersionHistorySnapshotsPreviousState(t *testing.T) {
 
 func TestVersionHistoryKeepsNewestTwentySnapshots(t *testing.T) {
 	app, _, _ := makeApp(t)
-	o := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Capped history", "content": "v0"}))
+	o := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Capped history", "document": documentFixture("v0")}))
 	for i := 1; i <= 25; i++ {
-		o = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, map[string]any{"content": fmt.Sprintf("v%d", i)}))
+		o = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, documentPatchPayload(t, app, o.ID, map[string]any{"document": documentFixture(fmt.Sprintf("v%d", i))})))
 	}
 	if o.Revision != 26 {
 		t.Fatalf("current revision = %d", o.Revision)
@@ -119,15 +124,15 @@ func TestVersionHistoryKeepsNewestTwentySnapshots(t *testing.T) {
 func TestVersionHistoryRestoreCreatesNewRevisionAndKeepsHistory(t *testing.T) {
 	app, _, _ := makeApp(t)
 	o := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "note", "title": "Restored note", "content": "alpha version",
+		"type_id": "note", "title": "Restored note", "document": documentFixture("alpha version"),
 		"properties": map[string]any{"summary": "alpha summary"},
 	}))
-	o = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, map[string]any{
-		"content": "beta version", "properties": map[string]any{"summary": "beta summary"},
-	}))
-	o = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, map[string]any{
-		"content": "gamma version", "properties": map[string]any{"summary": "gamma summary"},
-	}))
+	o = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, documentPatchPayload(t, app, o.ID, map[string]any{
+		"document": documentFixture("beta version"), "properties": map[string]any{"summary": "beta summary"},
+	})))
+	o = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, documentPatchPayload(t, app, o.ID, map[string]any{
+		"document": documentFixture("gamma version"), "properties": map[string]any{"summary": "gamma summary"},
+	})))
 	if o.Revision != 3 {
 		t.Fatalf("current revision = %d", o.Revision)
 	}
@@ -138,6 +143,9 @@ func TestVersionHistoryRestoreCreatesNewRevisionAndKeepsHistory(t *testing.T) {
 	}
 	if restored.Title != "Restored note" {
 		t.Fatalf("restore changed the title: %+v", restored)
+	}
+	if restored.Document == nil || !reflect.DeepEqual(*restored.Document, documentFixture("alpha version")) {
+		t.Fatal("restore flattened the canonical document or lost rich marks")
 	}
 	current := objectFrom(t, api(t, app, "GET", "/v1/objects/"+o.ID, nil))
 	if current.Content != "alpha version" || current.Revision != 4 {
@@ -158,8 +166,8 @@ func TestVersionHistoryRestoreCreatesNewRevisionAndKeepsHistory(t *testing.T) {
 
 func TestVersionHistoryRestoreHonorsBaseRevision(t *testing.T) {
 	app, _, _ := makeApp(t)
-	o := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "CAS history", "content": "alpha"}))
-	o = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, map[string]any{"content": "beta"}))
+	o := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "CAS history", "document": documentFixture("alpha")}))
+	o = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, documentPatchPayload(t, app, o.ID, map[string]any{"document": documentFixture("beta")})))
 	if o.Revision != 2 {
 		t.Fatalf("current revision = %d", o.Revision)
 	}
@@ -208,9 +216,9 @@ func TestVersionHistoryRestoreHonorsBaseRevision(t *testing.T) {
 
 func TestVersionHistoryStaysOutOfSyncJournal(t *testing.T) {
 	app, _, _ := makeApp(t)
-	o := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Sync history", "content": "SYNC_OLD_SENTINEL_1111"}))
+	o := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Sync history", "document": documentFixture("SYNC_OLD_SENTINEL_1111")}))
 	beforePatch := decodeBody[syncStatusResponse](t, api(t, app, "GET", "/v1/sync/status", nil))
-	o = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, map[string]any{"content": "SYNC_NEW_SENTINEL_2222"}))
+	o = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, documentPatchPayload(t, app, o.ID, map[string]any{"document": documentFixture("SYNC_NEW_SENTINEL_2222")})))
 	afterPatch := decodeBody[syncStatusResponse](t, api(t, app, "GET", "/v1/sync/status", nil))
 	if afterPatch.HeadSeq <= beforePatch.HeadSeq {
 		t.Fatalf("the object change did not reach the sync journal: %d -> %d", beforePatch.HeadSeq, afterPatch.HeadSeq)
@@ -245,8 +253,8 @@ func TestVersionHistoryStaysOutOfSyncJournal(t *testing.T) {
 
 func TestVersionHistorySkipsNoOpPatch(t *testing.T) {
 	app, _, _ := makeApp(t)
-	o := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "No-op history", "content": "same"}))
-	unchanged := objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, map[string]any{"content": "same"}))
+	o := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "No-op history", "document": documentFixture("same")}))
+	unchanged := objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, documentPatchPayload(t, app, o.ID, map[string]any{"document": documentFixture("same")})))
 	if unchanged.Revision != o.Revision {
 		t.Fatalf("no-op patch bumped the revision: %d -> %d", o.Revision, unchanged.Revision)
 	}
@@ -257,13 +265,13 @@ func TestVersionHistorySkipsNoOpPatch(t *testing.T) {
 
 func TestVersionHistoryCapturesSyncPush(t *testing.T) {
 	app, _, _ := makeApp(t)
-	o := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Mobile history", "content": "desktop content"}))
+	o := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Mobile history", "document": documentFixture("desktop content")}))
 	push := map[string]any{
 		"device_id": "pixel-test", "base_seq": 0,
 		"operations": []any{map[string]any{
 			"op_id": "op-version-01", "action": "put", "base_revision": o.Revision,
 			"object": map[string]any{
-				"id": o.ID, "type_id": "note", "title": o.Title, "content": "mobile content",
+				"id": o.ID, "type_id": "note", "title": o.Title, "document": documentFixture("mobile content"),
 				"properties": map[string]any{}, "links": []string{},
 				"created_at": o.CreatedAt, "updated_at": now(),
 			},
@@ -282,28 +290,34 @@ func TestVersionHistoryCapturesSyncPush(t *testing.T) {
 	}
 }
 
-func TestVersionHistoryRestoreDropsMissingLinks(t *testing.T) {
+func TestVersionHistoryRestoreKeepsRestorableAndDropsPurgedLinks(t *testing.T) {
 	app, _, _ := makeApp(t)
 	keep := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Kept link"}))
 	gone := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Deleted link"}))
+	purged := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Purged link"}))
 	o := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "note", "title": "Link restore", "content": "with links",
-		"links": []string{keep.ID, gone.ID},
+		"type_id": "note", "title": "Link restore", "document": documentFixture("with links"),
+		"links": []string{keep.ID, gone.ID, purged.ID},
 	}))
-	o = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, map[string]any{"content": "changed"}))
+	o = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, documentPatchPayload(t, app, o.ID, map[string]any{"document": documentFixture("changed")})))
 	if rr := api(t, app, "DELETE", "/v1/objects/"+gone.ID, nil); rr.Code != 200 {
 		t.Fatalf("delete link target: %s", rr.Body.String())
 	}
+	for _, path := range []string{"/v1/objects/" + purged.ID, "/v1/trash/" + purged.ID} {
+		if rr := api(t, app, "DELETE", path, nil); rr.Code != 200 {
+			t.Fatal(rr.Body.String())
+		}
+	}
 	restored := objectFrom(t, api(t, app, "POST", fmt.Sprintf("/v1/objects/%s/restore/1", o.ID), nil))
-	if restored.Content != "with links" || len(restored.Links) != 1 || restored.Links[0] != keep.ID {
-		t.Fatalf("restore did not drop the deleted link: %+v", restored)
+	if restored.Content != "with links" || !sameStrings(restored.Links, []string{keep.ID, gone.ID}) {
+		t.Fatalf("restore did not preserve trash and remove only purged link: %+v", restored)
 	}
 }
 
 func TestVersionHistoryIsEncryptedAndSurvivesRestart(t *testing.T) {
 	app, path, key := makeApp(t)
-	o := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Encrypted history", "content": "VERSION_SECRET_OLD_1234"}))
-	objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, map[string]any{"content": "VERSION_SECRET_NEW_5678"}))
+	o := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Encrypted history", "document": documentFixture("VERSION_SECRET_OLD_1234")}))
+	objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, documentPatchPayload(t, app, o.ID, map[string]any{"document": documentFixture("VERSION_SECRET_NEW_5678")})))
 	app.store.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
 	files, _ := filepath.Glob(path + "*")
 	for _, file := range files {
@@ -330,8 +344,8 @@ func TestVersionHistoryIsEncryptedAndSurvivesRestart(t *testing.T) {
 
 func TestVersionHistoryPurgeDeletesSnapshots(t *testing.T) {
 	app, _, _ := makeApp(t)
-	o := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Purged history", "content": "first"}))
-	objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, map[string]any{"content": "second"}))
+	o := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Purged history", "document": documentFixture("first")}))
+	objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+o.ID, documentPatchPayload(t, app, o.ID, map[string]any{"document": documentFixture("second")})))
 	if versions := versionSummaries(t, app, o.ID); len(versions) != 1 {
 		t.Fatalf("fixture did not create history: %+v", versions)
 	}

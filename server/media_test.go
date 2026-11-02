@@ -104,6 +104,7 @@ func TestStandaloneMediaUploadHasNoPlaceholderOriginAndRecognizesFiles(t *testin
 			_ = writer.Close()
 			req := httptest.NewRequest("POST", "/v1/assets", body)
 			req.Header.Set("Authorization", "Bearer "+testToken)
+			req.Header.Set("X-Lumen-Document-Version", "2")
 			req.Header.Set("Content-Type", writer.FormDataContentType())
 			rr := httptest.NewRecorder()
 			app.Handler().ServeHTTP(rr, req)

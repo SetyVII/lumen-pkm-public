@@ -12,10 +12,6 @@ import (
 	"unicode/utf8"
 )
 
-// Recurrence modes supported by the task recurrence engine. They cover the
-// fixed rhythms of Capacities' recurring tasks that this parity stage scoped:
-// daily, weekly (optionally pinned to weekdays), monthly (calendar day) and a
-// plain every-N-days interval.
 const (
 	recurrenceDaily       = "daily"
 	recurrenceWeekly      = "weekly"
@@ -313,9 +309,6 @@ func (a *App) uniqueOccurrenceTitle(parentTitle, date string) string {
 	return title
 }
 
-// instanceProperties hold per-occurrence state and are not copied to the next
-// occurrence. Content representations and attachments stay with the completed
-// occurrence, matching Capacities' "notes remain in the task" behavior.
 var instanceProperties = map[string]bool{
 	"status":                 true,
 	"due_date":               true,

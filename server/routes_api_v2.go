@@ -4,16 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"lumen/server/internal/document"
 	"net/http"
 	"strings"
 	"time"
 )
 
-// Developer API v2 (backend stage api-v2), modeled on Capacities' developer
-// API (developers.capacities.io): a discovery document, create-from-URL,
-// Markdown create/append and the daily-note append, all composing the earlier
-// parity stages (capture + weblink-reader, markdown-converter, journals).
-// Everything here is additive; no existing endpoint changed its contract.
 
 // apiVersion is echoed in the X-Lumen-Api-Version header on every response.
 // The request header is accepted for forward compatibility: an absent or
@@ -50,6 +46,7 @@ func writeCoreError(w http.ResponseWriter, err error) {
 
 func (a *App) registerAPIv2Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/api", a.apiDiscovery)
+	mux.HandleFunc("GET /v1/catalog", a.listCatalog)
 	mux.HandleFunc("POST /v1/objects/from-url", a.createObjectFromURL)
 	mux.HandleFunc("POST /v1/objects/markdown", a.createObjectFromMarkdown)
 	mux.HandleFunc("POST /v1/objects/{id}/append-markdown", a.appendObjectMarkdown)
@@ -102,6 +99,7 @@ var apiCatalog = []apiEndpointInfo{
 	{Name: "restore_object_version", Method: "POST", Path: "/v1/objects/{id}/restore/{revision}", Scope: "api:write"},
 
 	{Name: "get_journal", Method: "GET", Path: "/v1/journal/{date}", Scope: "api:read"},
+	{Name: "list_catalog", Method: "GET", Path: "/v1/catalog", Scope: "api:read"},
 	{Name: "append_to_journal", Method: "POST", Path: "/v1/journal/{date}/append", Scope: "api:write"},
 	{Name: "search_objects", Method: "GET", Path: "/v1/search", Scope: "api:read"},
 	{Name: "capture", Method: "POST", Path: "/v1/capture", Scope: "api:write"},
@@ -161,8 +159,10 @@ var apiCatalog = []apiEndpointInfo{
 // tool surface.
 func (a *App) apiDiscovery(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]any{
-		"version":      apiVersion,
-		"token_scopes": a.scopeNames,
+		"version":                 apiVersion,
+		"document_schema_version": 2,
+		"document_protocol":       "lumen-document/2",
+		"token_scopes":            a.scopeNames,
 		"limits": map[string]int{
 			"max_small_asset_bytes":    50 << 20,
 			"max_chunked_asset_bytes":  chunkedUploadMaxSize,
@@ -189,12 +189,6 @@ type fromURLRequest struct {
 	JournalLink   *bool    `json:"journal_link"`
 }
 
-// createObjectFromURL serves POST /v1/objects/from-url, the Capacities
-// "create object from URL" equivalent. It reuses the /v1/capture pipeline
-// (shared helpers in capture_pipeline.go): the same URL cleaning, the same
-// SSRF-guarded preview + reader fetch, the same duplicate detection. It adds
-// the developer conveniences capture does not have: notes_markdown appended
-// through MarkdownToBlocks and tags resolved to tag objects.
 func (a *App) createObjectFromURL(w http.ResponseWriter, r *http.Request) {
 	var req fromURLRequest
 	if !decodeLimit(w, r, &req, 12<<20) {
@@ -334,8 +328,13 @@ func (a *App) finishFromURL(w http.ResponseWriter, r *http.Request, o *Object, r
 			return nil
 		}
 		if len(blocks) > 0 {
-			o.Properties["blocks"] = blockListFromBlocks(blocks)
-			o.Content = blocksPlainText(blocks)
+			d, e := canonicalDocumentFromBlocks(blocks)
+			if e != nil {
+				return e
+			}
+			if e = setCanonicalDocument(o, d); e != nil {
+				return e
+			}
 		}
 	}
 	if err := a.validateObject(o); err != nil {
@@ -506,9 +505,12 @@ func (a *App) createObjectFromMarkdownCore(ctx context.Context, req objectFromMa
 		return Object{}, err
 	}
 	o := Object{ID: newID(), TypeID: req.TypeID, Title: req.Title, Properties: req.Properties, Links: []string{}, CreatedAt: now(), UpdatedAt: now()}
-	if len(blocks) > 0 {
-		o.Properties["blocks"] = blockListFromBlocks(blocks)
-		o.Content = blocksPlainText(blocks)
+	d, e := canonicalDocumentFromBlocks(blocks)
+	if e != nil {
+		return Object{}, e
+	}
+	if e = setCanonicalDocument(&o, d); e != nil {
+		return Object{}, e
 	}
 	a.writeMu.Lock()
 	defer a.writeMu.Unlock()
@@ -542,8 +544,10 @@ func (a *App) createObjectFromMarkdownCore(ctx context.Context, req objectFromMa
 }
 
 type appendMarkdownRequest struct {
-	Markdown *string `json:"markdown"`
-	Position *int    `json:"position"`
+	BaseRevision uint64  `json:"base_revision"`
+	OperationID  string  `json:"op_id"`
+	Markdown     *string `json:"markdown"`
+	Position     *int    `json:"position"`
 }
 
 // appendObjectMarkdown serves POST /v1/objects/{id}/append-markdown: it
@@ -568,23 +572,13 @@ func (a *App) appendObjectMarkdown(w http.ResponseWriter, r *http.Request) {
 // the MCP append_md_to_object tool (backend stage mcp-server). The caller
 // does NOT hold writeMu.
 func (a *App) appendObjectMarkdownCore(ctx context.Context, objectID string, req appendMarkdownRequest) (Object, error) {
+	commands, e := canonicalAppendCommands(stringValue(req.Markdown), req.OperationID, req.Position, "")
+	if e != nil {
+		return Object{}, e
+	}
 	a.writeMu.Lock()
 	defer a.writeMu.Unlock()
-	var o Object
-	if err := a.store.Get("object", objectID, &o); err != nil {
-		return Object{}, errNotFoundHTTP("Object not found")
-	}
-	if err := appendMarkdownBlocks(&o, stringValue(req.Markdown), req.Position); err != nil {
-		return Object{}, err
-	}
-	o.UpdatedAt = now()
-	if err := a.validateObject(&o); err != nil {
-		return Object{}, err
-	}
-	if err := a.saveObject(ctx, &o); err != nil {
-		return Object{}, errPersistHTTP("Could not append the markdown")
-	}
-	return o, nil
+	return a.commitDocument(objectID, req.BaseRevision, req.OperationID, nil, commands)
 }
 
 func stringValue(value *string) string {
@@ -611,6 +605,9 @@ func stringValue(value *string) string {
 // (0-based) applies only to the block representation; for plain-text objects
 // it is ignored. The caller holds writeMu.
 func appendMarkdownBlocks(o *Object, markdown string, position *int) error {
+	if o.Document != nil {
+		return appendCanonicalMarkdown(o, markdown, position)
+	}
 	if strings.TrimSpace(markdown) == "" {
 		return errors.New("Provide markdown")
 	}
@@ -654,6 +651,13 @@ func appendMarkdownBlocks(o *Object, markdown string, position *int) error {
 
 // appendPlainText extends the canonical plain-text body.
 func appendPlainText(o *Object, text string) {
+	if o.Document != nil {
+		if text != "" {
+			o.Document.Blocks = append(o.Document.Blocks, document.Node{ID: newID(), Type: "paragraph", Content: []document.Inline{{Type: "text", Text: text}}})
+			o.Content = document.PlainText(*o.Document)
+		}
+		return
+	}
 	if text == "" {
 		return
 	}
@@ -715,21 +719,20 @@ func blockListFromBlocks(blocks []Block) []any {
 // ---------------------------------------------------------------------------
 
 type journalAppendRequest struct {
-	Markdown string `json:"markdown"`
-	Section  string `json:"section"`
+	BaseRevision uint64 `json:"base_revision"`
+	OperationID  string `json:"op_id"`
+	Markdown     string `json:"markdown"`
+	Section      string `json:"section"`
 }
 
-// appendJournalMarkdown serves POST /v1/journal/{date}/append: after the call
-// the daily note for the date exists (the same lazy semantics as
-// GET /v1/journal/{date}) and the Markdown is part of its body. section
-// places the content under a level-2 heading with that title, creating the
-// heading when it does not exist yet.
+// appendJournalMarkdown updates an existing daily note with a revisioned,
+// replayable body append. GET the journal first to obtain its current revision.
 func (a *App) appendJournalMarkdown(w http.ResponseWriter, r *http.Request) {
 	var req journalAppendRequest
 	if !decodeLimit(w, r, &req, 8<<20) {
 		return
 	}
-	o, err := a.appendJournalMarkdownCore(r.Context(), r.PathValue("date"), req.Markdown, req.Section)
+	o, err := a.appendJournalMarkdownCore(r.Context(), r.PathValue("date"), req.Markdown, req.Section, req.BaseRevision, req.OperationID)
 	if err != nil {
 		writeCoreError(w, err)
 		return
@@ -740,34 +743,17 @@ func (a *App) appendJournalMarkdown(w http.ResponseWriter, r *http.Request) {
 // appendJournalMarkdownCore is the daily-note append shared by the HTTP
 // endpoint and the MCP append_to_daily_note tool (backend stage mcp-server).
 // The caller does NOT hold writeMu.
-func (a *App) appendJournalMarkdownCore(ctx context.Context, date, markdown, section string) (Object, error) {
-	if strings.TrimSpace(markdown) == "" {
-		return Object{}, errors.New("Provide markdown")
+func (a *App) appendJournalMarkdownCore(ctx context.Context, date, markdown, section string, base uint64, opID string) (Object, error) {
+	commands, e := canonicalAppendCommands(markdown, opID, nil, strings.TrimSpace(section))
+	if e != nil {
+		return Object{}, e
 	}
-	section = strings.TrimSpace(section)
 	a.writeMu.Lock()
 	defer a.writeMu.Unlock()
-	o, err := a.ensureJournal(ctx, date, false)
-	if err != nil {
-		return Object{}, err
+	if parsed, err := time.Parse("2006-01-02", date); err != nil || parsed.Format("2006-01-02") != date {
+		return Object{}, errors.New("Date must be YYYY-MM-DD")
 	}
-	if section == "" {
-		if err := appendMarkdownBlocks(&o, markdown, nil); err != nil {
-			return Object{}, err
-		}
-	} else {
-		if err := appendJournalSection(&o, section, markdown); err != nil {
-			return Object{}, err
-		}
-	}
-	o.UpdatedAt = now()
-	if err := a.validateObject(&o); err != nil {
-		return Object{}, err
-	}
-	if err := a.saveObject(ctx, &o); err != nil {
-		return Object{}, errPersistHTTP("Could not append to the journal")
-	}
-	return o, nil
+	return a.commitDocument("journal-"+date, base, opID, nil, commands)
 }
 
 // appendJournalSection appends Markdown under a section heading. In the block
@@ -776,6 +762,46 @@ func (a *App) appendJournalMarkdownCore(ctx context.Context, date, markdown, sec
 // plain-text daily note the section is a "## <name>" line and the content is
 // inserted before the next line starting with "#".
 func appendJournalSection(o *Object, section, markdown string) error {
+	if o.Document != nil {
+		addition, e := MarkdownToBlocks(markdown)
+		if e != nil {
+			return e
+		}
+		nodes, e := canonicalDocumentFromBlocks(addition)
+		if e != nil {
+			return e
+		}
+		d, e := document.Normalize(*o.Document)
+		if e != nil {
+			return e
+		}
+		insert := len(d.Blocks)
+		found := false
+		level := 0
+		for i, n := range d.Blocks {
+			if n.Type != "heading" {
+				continue
+			}
+			v, _ := n.Attrs["level"].(float64)
+			if found && int(v) <= level {
+				insert = i
+				break
+			}
+			title := document.PlainText(document.Document{SchemaVersion: 2, Blocks: []document.Node{n}})
+			if title == section {
+				found = true
+				level = int(v)
+			}
+		}
+		if !found {
+			nodes.Blocks = append([]document.Node{{ID: newID(), Type: "heading", Attrs: map[string]any{"level": 2}, Content: []document.Inline{{Type: "text", Text: section}}}}, nodes.Blocks...)
+		}
+		out := append([]document.Node{}, d.Blocks[:insert]...)
+		out = append(out, nodes.Blocks...)
+		out = append(out, d.Blocks[insert:]...)
+		d.Blocks = out
+		return setCanonicalDocument(o, d)
+	}
 	blocks, err := MarkdownToBlocks(markdown)
 	if err != nil {
 		return err

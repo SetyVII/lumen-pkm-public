@@ -1,3 +1,4 @@
+#include "lumen_document.hpp"
 #include "main_window.hpp"
 #include "lumen_aliases.hpp"
 
@@ -140,6 +141,7 @@ void MainWindow::rebuildSidebar() {
     }
 
 void MainWindow::wireEditor(RichEditor *edit, const QString &origin, bool preview) {
+        edit->setDocumentObjectId(origin);
         edit->setAppearance(dark, reduceMotion);
         edit->setReferenceData(objects, types);
         edit->setRecentIds(recentObjectIds);
@@ -184,6 +186,11 @@ void MainWindow::wireEditor(RichEditor *edit, const QString &origin, bool previe
         };
         edit->resourceProvider = [this, edit = QPointer<RichEditor>(edit)](int type, const QUrl &name) -> QVariant {
             if (type == QTextDocument::ImageResource) {
+                if (name.scheme() == "lumen" && name.host() == "asset") {
+                    const auto assetId = name.path().mid(1); const auto key = "asset/" + assetId;
+                    if (imageMemoryCache_.contains(key)) return imageMemoryCache_.value(key);
+                    if (edit) ensureAssetImageLoaded(edit, assetId);
+                }
                 if (name.scheme() == "lumen" && name.host() == "image") {
                     QString objId = name.path();
                     while (objId.startsWith('/')) objId.remove(0, 1);
@@ -208,7 +215,7 @@ void MainWindow::wireEditor(RichEditor *edit, const QString &origin, bool previe
             const QString &type, const QString &text, RichEditor::ReferenceCompletion done) {
             QJsonObject props;
             if (type == "task") props["status"] = "todo";
-            api.post("/v1/objects", {{"type_id", type}, {"title", text.isEmpty() ? "Sin título" : text}, {"content", ""},
+            api.post("/v1/objects", {{"type_id", type}, {"title", text.isEmpty() ? "Sin título" : text}, {"document", LumenDocument::empty()},
                                      {"properties", props}, {"links", QJsonArray{}}},
                      [this, origin, guard, done](QJsonValue v, QString err) {
                          if (!err.isEmpty()) {
@@ -219,16 +226,36 @@ void MainWindow::wireEditor(RichEditor *edit, const QString &origin, bool previe
                          auto o = v.toObject();
                          rememberObject(o);
                          rebuildSidebar();
-                         if (!origin.isEmpty()) {
-                             api.patch("/v1/objects/" + origin, {{"add_links", QJsonArray{str(o, "id")}}},
-                                       [](QJsonValue, QString) {});
-                         }
                          if (done) done(o);
                      });
+        };
+        edit->blockResolveRequested = [this](QString blockID, QString owner, RichEditor::ReferenceCompletion done) {
+            QUrlQuery query; if (!owner.isEmpty()) query.addQueryItem("object_id", owner);
+            api.get("/v1/blocks/" + QString::fromLatin1(QUrl::toPercentEncoding(blockID)) + "?" + query.toString(QUrl::FullyEncoded),
+                [this, done](QJsonValue response, QString errorMessage) { if (!errorMessage.isEmpty()) { error(errorMessage); done({}); } else done(response.toObject()); });
+        };
+        edit->blockSearchRequested = [this](QString query, std::function<void(QJsonArray)> done) {
+            QUrlQuery params; params.addQueryItem("q", query); params.addQueryItem("limit", "50");
+            api.get("/v1/blocks?" + params.toString(QUrl::FullyEncoded), [done](QJsonValue response, QString error) {
+                done(error.isEmpty() ? response.toObject().value("hits").toArray() : QJsonArray());
+            });
         };
         edit->referenceCreateRequested =
             [this, origin, guard = QPointer<RichEditor>(edit)](QString type, QString name,
                                                                RichEditor::ReferenceCompletion done) {
+                if (type == "image" || type == "pdf") {
+                    const auto path = QFileDialog::getOpenFileName(guard ? static_cast<QWidget *>(guard.data()) : static_cast<QWidget *>(this),
+                        type == "image" ? "Añadir imagen" : "Añadir PDF", {},
+                        type == "image" ? "Imágenes (*.png *.jpg *.jpeg *.webp *.gif)" : "PDF (*.pdf)");
+                    if (path.isEmpty()) { done({}); return; }
+                    api.upload("", path, [this, done](QJsonValue response, QString errorMessage) {
+                        if (!errorMessage.isEmpty()) { error(errorMessage); done({}); return; }
+                        const auto object = response.toObject().value("media_object").toObject();
+                        if (object.isEmpty()) { error("El archivo no generó un objeto de medio válido."); done({}); return; }
+                        rememberObject(object); rebuildSidebar(); done(object);
+                    });
+                    return;
+                }
                 Callback complete = [this, origin, guard, done](QJsonValue v, QString err) {
                     if (!err.isEmpty()) {
                         error(err);
@@ -290,7 +317,9 @@ void MainWindow::wireEditor(RichEditor *edit, const QString &origin, bool previe
                     titleEdit->setAccessibleName("Título del nuevo objeto");
                     outer->addWidget(titleEdit);
 
-                    auto *contentEdit = new QTextEdit(d);
+                    auto *contentEdit = new RichEditor(d);
+                    wireEditor(contentEdit, {}, true);
+                    contentEdit->setDocumentObjectId(QUuid::createUuid().toString(QUuid::WithoutBraces));
                     contentEdit->setPlaceholderText("Text");
                     contentEdit->setAccessibleName("Contenido del nuevo objeto");
                     outer->addWidget(contentEdit, 1);
@@ -314,11 +343,12 @@ void MainWindow::wireEditor(RichEditor *edit, const QString &origin, bool previe
                     auto commitCreate = [this, d, type, titleEdit, contentEdit, complete = std::move(complete)]() mutable {
                         QString finalTitle = titleEdit->text().trimmed();
                         if (finalTitle.isEmpty()) finalTitle = "Sin título";
-                        QString finalContent = contentEdit->toPlainText();
+                        const auto finalDocument = contentEdit->canonicalDocument();
+                        const auto finalID = contentEdit->documentObjectId();
                         QJsonObject props;
                         if (type == "task") props["status"] = "todo";
                         d->close();
-                        api.post("/v1/objects", {{"type_id", type}, {"title", finalTitle}, {"content", finalContent},
+                        api.post("/v1/objects", {{"id", finalID}, {"type_id", type}, {"title", finalTitle}, {"document", finalDocument},
                                                {"properties", props}, {"links", QJsonArray{}}},
                                  std::move(complete));
                     };
@@ -400,35 +430,20 @@ void MainWindow::wireEditor(RichEditor *edit, const QString &origin, bool previe
     }
 
 void MainWindow::loadEditor(RichEditor *edit, const QJsonObject &object) {
-        auto props = object.value("properties").toObject();
-        const auto blocks = props.value("blocks").toArray();
-        if (!blocks.isEmpty()) {
-            edit->setStructuredBlocks(blocks);
-            for (const auto &bVal : blocks) {
-                const auto bObj = bVal.toObject();
-                for (const auto &rVal : bObj.value("runs").toArray()) {
-                    const auto rObj = rVal.toObject();
-                    if (rObj.value("type").toString() == "image" || rObj.contains("image_name")) {
-                        QString objId = rObj.value("object_id").toString();
-                        if (objId.isEmpty()) {
-                            const QString imgName = rObj.value("image_name").toString();
-                            if (imgName.startsWith("lumen://image/")) {
-                                objId = imgName.mid(14);
-                            }
-                        }
-                        if (!objId.isEmpty()) {
-                            ensureImageLoaded(edit, objId);
-                        }
-                    }
+        edit->setDocumentObjectId(object.value("id").toString());
+        const auto doc = object.value("document").toObject();
+        edit->setCanonicalDocument(doc.value("schema_version").toInt() == 2 ? doc : LumenDocument::empty());
+        std::function<void(const QJsonArray &)> loadImages = [&](const QJsonArray &nodes) {
+            for (const auto &value : nodes) {
+                const auto node = value.toObject(); const auto attrs = node.value("attrs").toObject();
+                if (node.value("type") == "image") {
+                    if (!attrs.value("object_id").toString().isEmpty()) ensureImageLoaded(edit, attrs.value("object_id").toString());
+                    else ensureAssetImageLoaded(edit, attrs.value("asset_id").toString());
                 }
+                loadImages(node.value("children").toArray());
             }
-        } else if (props.value("rich_text").isString())
-            edit->setHtml(props.value("rich_text").toString());
-        else
-            edit->setPlainText(str(object, "content"));
-        // Allocate missing block IDs while the caller is still loading. The
-        // editor's deferred normalization must not turn a remote read into a
-        // local edit/autosave after renderEditor has connected textChanged.
+        };
+        loadImages(doc.value("blocks").toArray());
         (void)edit->structuredBlocks();
     }
 
@@ -654,12 +669,6 @@ void MainWindow::renderEditor(bool journal) {
         } else {
             headerLayout->addWidget(title);
             headerLayout->addWidget(tagRow);
-            // D6: the object's aliases read-only under the title, small and
-            // muted (Capacities shows them close to the title). Display-only
-            // by decision: editing lives in the "…" Customize menu, and the
-            // label word-wraps, so long lists never clip. The label always
-            // exists and hides when empty, so the alias PATCH can refresh it
-            // in place without rebuilding a dirty page.
             auto *aliasesLabel = label("", "aliasesLabel");
             aliasesLabel->setStyleSheet(QString("color:%1;font-size:13px;padding:0 1px;")
                                             .arg(dark ? "#919097" : "#75747b"));
@@ -801,8 +810,7 @@ void MainWindow::renderEditor(bool journal) {
         resizeEditor();
         noteLayout->addWidget(editor);
         reconcileReferences();
-        if (linked != current.value("links").toArray())
-            markDirty();
+        // Rebuilding derived reference chips is a read, not a document edit.
         connect(editor, &QTextEdit::textChanged, this, [this] {
             if (!loading) {
                 reconcileReferences();
@@ -1121,22 +1129,13 @@ void MainWindow::savePreview(QPointer<GuardedDialog> dialog, std::shared_ptr<Pre
         }
         state->timer->stop();
         state->object["title"] = state->heading->text().trimmed();
-        const auto blocks=state->edit->structuredBlocks();
-        state->object["content"] = state->edit->exportText();
+        state->object["document"] = state->edit->canonicalDocument();
+        state->object.remove("content");
         auto p = state->object.value("properties").toObject();
-        p["rich_text"] = state->edit->toHtml();
-        p["blocks"] = blocks;
+        p.remove("rich_text"); p.remove("blocks");
         state->object["properties"] = p;
-        QJsonArray refs;
-        if (state->edit) {
-            for (auto id : state->edit->documentReferenceIds())
-                if (knownObjectIds.contains(id.toString()) && !refs.contains(id))
-                    refs.append(id);
-        }
-        for (auto v : attachedAssetIds(state->object))
-            if (!refs.contains(v))
-                refs.append(v);
-        state->object["links"] = refs;
+        state->object["op_id"] = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        // Inline references are derived by the backend; preserve explicit links.
         if (state->object.contains("revision"))
             state->object["base_revision"] = state->object.value("revision");
         state->saving = true;
@@ -1148,9 +1147,8 @@ void MainWindow::savePreview(QPointer<GuardedDialog> dialog, std::shared_ptr<Pre
                       if (!dialog)
                           return;
                       if (status == 409) {
-                          const auto remote = v.toObject().value("current").toObject();
-                          if (!remote.isEmpty())
-                              state->object["revision"] = remote.value("revision");
+                          // A conflict never advances the base revision of a local draft.
+                          // Reload/merge must be explicit before it can overwrite remote work.
                           state->dirty = true;
                           state->closing = false;
                           state->status->setText("Conflicto: revisa el objeto antes de guardar");
@@ -1163,6 +1161,7 @@ void MainWindow::savePreview(QPointer<GuardedDialog> dialog, std::shared_ptr<Pre
                           return;
                       }
                       rememberObject(v.toObject());
+                      if (state->dirty) state->object["revision"] = v.toObject().value("revision");
                       if (!state->dirty) {
                           state->object = v.toObject();
                           state->status->setText(saveState(state->object));
@@ -1288,7 +1287,8 @@ void MainWindow::showCoverMenu(QWidget *anchor, std::shared_ptr<PreviewSession> 
                     });
                 }
                 if (previewSession->status) previewSession->status->setText("Guardando…");
-                api.patch("/v1/objects/" + str(previewSession->object, "id"), previewSession->object,
+                api.patch("/v1/objects/" + str(previewSession->object, "id"), QJsonObject{{"properties", previewSession->object.value("properties")},
+                                      {"base_revision", previewSession->object.value("revision")}},
                           [this, previewSession](QJsonValue v, QString err) {
                               if (!err.isEmpty()) {
                                   if (previewSession->status) previewSession->status->setText("No se guardó: " + err);
@@ -1296,6 +1296,7 @@ void MainWindow::showCoverMenu(QWidget *anchor, std::shared_ptr<PreviewSession> 
                               }
                               if (!v.toObject().isEmpty()) {
                                   rememberObject(v.toObject());
+                                  previewSession->object["revision"] = v.toObject().value("revision");
                                   if (!previewSession->dirty) {
                                       previewSession->object = v.toObject();
                                       if (previewSession->status) previewSession->status->setText(saveState(previewSession->object));
@@ -1370,7 +1371,8 @@ void MainWindow::showCoverMenu(QWidget *anchor, std::shared_ptr<PreviewSession> 
                         previewCover->hide();
                     }
                     if (previewSession->status) previewSession->status->setText("Guardando…");
-                    api.patch("/v1/objects/" + str(previewSession->object, "id"), previewSession->object,
+                    api.patch("/v1/objects/" + str(previewSession->object, "id"), QJsonObject{{"properties", previewSession->object.value("properties")},
+                                      {"base_revision", previewSession->object.value("revision")}},
                               [this, previewSession](QJsonValue v, QString err) {
                                   if (!err.isEmpty()) {
                                       if (previewSession->status) previewSession->status->setText("No se guardó: " + err);
@@ -1419,7 +1421,8 @@ void MainWindow::showObjectOptionsMenu(QWidget *anchor, std::shared_ptr<PreviewS
                     });
                 }
                 if (previewSession->status) previewSession->status->setText("Guardando…");
-                api.patch("/v1/objects/" + str(previewSession->object, "id"), previewSession->object,
+                api.patch("/v1/objects/" + str(previewSession->object, "id"), QJsonObject{{"properties", previewSession->object.value("properties")},
+                                      {"base_revision", previewSession->object.value("revision")}},
                           [this, previewSession](QJsonValue v, QString err) {
                               if (!err.isEmpty()) {
                                   if (previewSession->status) previewSession->status->setText("No se guardó: " + err);
@@ -1427,6 +1430,7 @@ void MainWindow::showObjectOptionsMenu(QWidget *anchor, std::shared_ptr<PreviewS
                               }
                               if (!v.toObject().isEmpty()) {
                                   rememberObject(v.toObject());
+                                  previewSession->object["revision"] = v.toObject().value("revision");
                                   if (!previewSession->dirty) {
                                       previewSession->object = v.toObject();
                                       if (previewSession->status) previewSession->status->setText(saveState(previewSession->object));
@@ -1471,7 +1475,8 @@ void MainWindow::showObjectOptionsMenu(QWidget *anchor, std::shared_ptr<PreviewS
                         previewCover->hide();
                     }
                     if (previewSession->status) previewSession->status->setText("Guardando…");
-                    api.patch("/v1/objects/" + str(previewSession->object, "id"), previewSession->object,
+                    api.patch("/v1/objects/" + str(previewSession->object, "id"), QJsonObject{{"properties", previewSession->object.value("properties")},
+                                      {"base_revision", previewSession->object.value("revision")}},
                               [this, previewSession](QJsonValue v, QString err) {
                                   if (!err.isEmpty()) {
                                       if (previewSession->status) previewSession->status->setText("No se guardó: " + err);
@@ -1479,6 +1484,7 @@ void MainWindow::showObjectOptionsMenu(QWidget *anchor, std::shared_ptr<PreviewS
                                   }
                                   if (!v.toObject().isEmpty()) {
                                       rememberObject(v.toObject());
+                                      previewSession->object["revision"] = v.toObject().value("revision");
                                       if (!previewSession->dirty) {
                                           previewSession->object = v.toObject();
                                           if (previewSession->status) previewSession->status->setText(saveState(previewSession->object));
@@ -1513,9 +1519,6 @@ void MainWindow::showObjectOptionsMenu(QWidget *anchor, std::shared_ptr<PreviewS
             propertyDialog(str(targetObj, "type_id"));
         });
 
-        // D5 (Capacities templates): any object can be flagged as a template
-        // of its type; a flagged one can drop the flag. The action works on
-        // the open page and on preview dialogs alike.
         const QString targetId = str(targetObj, "id");
         const bool targetIsTemplate = objectIsTemplate(targetObj);
         menu.addAction(LumenIcons::icon("package-open"),
@@ -2354,7 +2357,7 @@ void MainWindow::importCollectionNext(std::shared_ptr<CollectionImport> batch) {
             QString type = batch->type;
             if (type.isEmpty() || type == "journal" || type == "query" || type == "image" || type == "pdf") type = "note";
             api.post("/v1/objects", {{"title", file.completeBaseName()}, {"type_id", type},
-                                   {"content", QString::fromUtf8(input.readAll())},
+                                   {"document", LumenDocument::fromText(QString::fromUtf8(input.readAll()))},
                                    {"properties", QJsonObject{}}, {"links", QJsonArray{}}},
                      [this, finish](QJsonValue value, QString err) {
                          if (err.isEmpty()) rememberObject(value.toObject());
@@ -2370,7 +2373,7 @@ void MainWindow::importCollectionNext(std::shared_ptr<CollectionImport> batch) {
         else {
             const QString type = batch->type == "query" || batch->type == "journal" ? "note" : batch->type;
             api.post("/v1/objects", {{"title", file.completeBaseName()}, {"type_id", type},
-                                   {"content", ""}, {"properties", QJsonObject{}}, {"links", QJsonArray{}}},
+                                   {"document", LumenDocument::empty()}, {"properties", QJsonObject{}}, {"links", QJsonArray{}}},
                      [this, upload, finish](QJsonValue value, QString err) {
                          if (!err.isEmpty()) { finish(err); return; }
                          rememberObject(value.toObject());
@@ -2535,10 +2538,6 @@ void MainWindow::newObject(QString defaultType) {
         }
         combo->setCurrentIndex(qMax(0, combo->findData(defaultType.isEmpty() ? "note" : defaultType)));
         l->addWidget(combo);
-        // D5: creating an object of a type with templates can start from one
-        // (Capacities "from template"). The picker lists the type's templates
-        // next to "Blank" and hides itself for template-less types, so the
-        // flow is unchanged when there is nothing to offer.
         auto *templateRow = new QWidget;
         templateRow->setObjectName("newObjectTemplateRow");
         auto *templateLayout = new QHBoxLayout(templateRow);
@@ -2591,6 +2590,7 @@ void MainWindow::newObject(QString defaultType) {
         if (name->text().trimmed().isEmpty())
             return;
         const auto selectedType = combo->currentData().toString();
+        if (selectedType == "image" || selectedType == "pdf") { importMedia(selectedType); return; }
         const auto originId = str(current, "id");
         const auto originRoute = route;
         const auto generation = navigationGeneration;
@@ -2605,7 +2605,7 @@ void MainWindow::newObject(QString defaultType) {
         api.post("/v1/objects",
                  {{"title", name->text().trimmed()},
                   {"type_id", selectedType},
-                  {"content", summary->text()},
+                  {"document", LumenDocument::fromText(summary->text())},
                   {"properties", props},
                   {"links", QJsonArray{}}},
                  [this, originId, originRoute, generation](QJsonValue v, QString e) {

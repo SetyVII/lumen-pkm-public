@@ -28,10 +28,12 @@ class ObjectCatalogTest {
     @Test fun relationMetadataSurvivesWireAndReferenceDeletionKeepsPropertyRelation() {
         val original = LumenObject.fromJson(JSONObject().put("id", "note").put("type_id", "note").put("property_links", JSONArray().put("tag")))
         assertEquals(listOf("tag"), LumenObject.fromJson(original.toJson()).propertyLinks)
-        val mentioned = original.withPlainContent("[Etiqueta](lumen://object/tag)")
-        assertTrue("tag" in mentioned.links)
-        val removed = mentioned.withPlainContent("Texto sin mención")
-        assertFalse("tag" in removed.links)
+        val mentioned = original.withDocument(CanonicalDocument.empty().withBlocks(JSONArray().put(documentParagraph().put("content", JSONArray().put(
+            JSONObject().put("type", "object_ref").put("object_id", "tag").put("label", "Etiqueta"))))))
+        assertTrue("tag" in mentioned.document.references())
+        assertFalse("tag" in mentioned.links)
+        val removed = mentioned.withDocument(CanonicalDocument.fromText("Texto sin mención"))
+        assertFalse("tag" in removed.document.references())
         assertTrue("tag" in removed.propertyLinks)
     }
 
@@ -41,31 +43,14 @@ class ObjectCatalogTest {
         assertEquals(setOf("person"), relatedObjectIds(obj, listOf(type)))
     }
 
-    @Test fun characterByCharacterMarkdownProducesFormattedRuns() {
-        var obj = LumenObject("markdown", "note", "Prueba")
-        var visible = ""
-        "Antes **fuerte** y _cursiva_".forEach { ch ->
-            obj = obj.withPlainContent(visible + ch)
-            visible = obj.content
-        }
-        assertEquals("Antes fuerte y cursiva", obj.content)
-        val runs = obj.properties.getJSONArray("blocks").getJSONObject(0).getJSONArray("runs")
-        assertTrue((0 until runs.length()).any { runs.getJSONObject(it).optBoolean("bold") })
-        assertTrue((0 until runs.length()).any { runs.getJSONObject(it).optBoolean("italic") })
-        val yOffset = obj.content.indexOf(" y ") + 1
-        var offset = 0
-        for (i in 0 until runs.length()) {
-            val run = runs.getJSONObject(i)
-            if (yOffset in offset until offset + run.getString("text").length) assertFalse(run.optBoolean("bold"))
-            offset += run.getString("text").length
-        }
-    }
-
-    @Test fun externalLinksRemainLinksAndCodeRemainsLiteral() {
-        val obj = LumenObject("markdown", "note", "Prueba").withPlainContent("[Web](https://example.org) y `**literal**`")
-        val tokens = editorTokens(obj.content, obj)
-        assertEquals("https://example.org", tokens.first { it.kind == EditorTokenKind.LINK }.url)
-        assertTrue(obj.content.contains("**literal**"))
+    @Test fun documentMarksAndLinksSurviveMetadataChanges() {
+        val paragraph = documentParagraph().put("content", JSONArray()
+            .put(JSONObject().put("type", "text").put("text", "Fuerte").put("marks", JSONObject().put("bold", true)))
+            .put(JSONObject().put("type", "link").put("text", "Web").put("href", "https://example.org")))
+        val original = LumenObject("note", "note", "Prueba").withDocument(CanonicalDocument.empty().withBlocks(JSONArray().put(paragraph)))
+        val changed = LumenObject.fromJson(original.copy(title = "Renombrado").toJson())
+        assertEquals(original.document.toJson().toString(), changed.document.toJson().toString())
+        assertTrue(changed.document.blocks().getJSONObject(0).getJSONArray("content").getJSONObject(0).getJSONObject("marks").getBoolean("bold"))
     }
     @Test fun sharedSchemaFixtureLoadsWithoutFlatteningRelations() {
         val fixture = generateSequence(java.io.File(System.getProperty("user.dir"))) { it.parentFile }

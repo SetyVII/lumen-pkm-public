@@ -18,21 +18,21 @@ func TestScenarioVersionHistoryJourney(t *testing.T) {
 	tagC := scenarioTag(t, app, "gamma")
 
 	note := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "note", "title": "Draft one", "content": "alpha ALPHA_TOKEN",
+		"type_id": "note", "title": "Draft one", "document": documentFixture("alpha ALPHA_TOKEN"),
 		"properties": map[string]any{"tags": []string{tagA.ID}},
 	}))
-	note = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+note.ID, map[string]any{
-		"title": "Draft two", "content": "beta BETA_TOKEN two",
+	note = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+note.ID, documentPatchPayload(t, app, note.ID, map[string]any{
+		"title": "Draft two", "document": documentFixture("beta BETA_TOKEN two"),
 		"properties": map[string]any{"tags": []string{tagB.ID}},
-	}))
-	note = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+note.ID, map[string]any{
-		"title": "Draft three", "content": "gamma GAMMA_TOKEN three four",
+	})))
+	note = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+note.ID, documentPatchPayload(t, app, note.ID, map[string]any{
+		"title": "Draft three", "document": documentFixture("gamma GAMMA_TOKEN three four"),
 		"properties": map[string]any{"tags": []string{tagC.ID}},
-	}))
-	note = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+note.ID, map[string]any{
-		"title": "Draft four", "content": "delta DELTA_TOKEN four",
+	})))
+	note = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+note.ID, documentPatchPayload(t, app, note.ID, map[string]any{
+		"title": "Draft four", "document": documentFixture("delta DELTA_TOKEN four"),
 		"properties": map[string]any{"tags": []string{tagA.ID}},
-	}))
+	})))
 	if note.Revision != 4 {
 		t.Fatalf("current revision = %d", note.Revision)
 	}

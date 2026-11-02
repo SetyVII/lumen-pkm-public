@@ -15,7 +15,7 @@ MainWindow::MainWindow() : api(this) {
         if (pref.value("visualVersion", 0).toInt() < 2 && pref.contains("fontSize"))
             fontSize = qRound(fontSize * 4. / 3.);
         fontSize = qBound(12, fontSize, 22);
-        themePreset = pref.value("themePreset", "Capacities").toString();
+        themePreset = pref.value("themePreset", "Grafito").toString();
         reduceMotion = pref.value("reduceMotion", false).toBool();
         // D4: restore the persisted recently-opened ids for this workspace
         // (object ids only; see main_window_sync.cpp).
@@ -205,9 +205,6 @@ MainWindow::MainWindow() : api(this) {
         shortcut("Ctrl+P", [this] {
             commandPalette();
         });
-        // Find in page (Capacities): Ctrl+F is the find bar, Ctrl+R opens it
-        // with the replace row, F3/Shift+F3 repeat the last search. The
-        // command palette keeps Ctrl+P.
         shortcut("Ctrl+F", [this] {
             if (editor) editor->showFindBar();
         });
@@ -577,7 +574,7 @@ void MainWindow::navigateJournal(QDate target) {
                         auto o = v.toObject();
                         rememberObject(o);
                         if (!dirty && !saving && str(current, "id") == str(o, "id")) {
-                            if (str(current, "content") != str(o, "content") ||
+                            if (current.value("document") != o.value("document") ||
                                 current.value("properties") != o.value("properties")) {
                                 rememberPosition();
                                 current = o;
@@ -674,7 +671,7 @@ void MainWindow::preferences() {
         auto *l = new QVBoxLayout(&d);
         l->addWidget(label("Un espacio con tu ritmo", "dialogTitle"));
         auto *preset = new QComboBox;
-        preset->addItems({"Capacities", "Lumen", "Noir", "Terminal", "Papel"});
+        preset->addItems({"Grafito", "Lumen", "Noir", "Terminal", "Papel"});
         preset->setCurrentText(themePreset);
         l->addWidget(label("Tema visual"));
         l->addWidget(preset);

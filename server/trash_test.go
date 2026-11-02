@@ -11,7 +11,7 @@ func TestTrashRestoreKeepsContentAndBacklinks(t *testing.T) {
 	app, _, _ := makeApp(t)
 	tag := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "tag", "title": "Trash tag"}))
 	note := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "note", "title": "Trash note", "content": "Recoverable body",
+		"type_id": "note", "title": "Trash note", "document": documentFixture("Recoverable body"),
 		"properties": map[string]any{"tags": []string{tag.ID}},
 	}))
 	journal := objectFrom(t, api(t, app, "GET", "/v1/journal/2026-10-30", nil))
@@ -74,7 +74,7 @@ func TestTrashRestoreKeepsContentAndBacklinks(t *testing.T) {
 
 func TestTrashPurgeKeepsAntiResurrectionAndCleansReferences(t *testing.T) {
 	app, _, _ := makeApp(t)
-	note := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Purge me", "content": "gone"}))
+	note := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Purge me", "document": documentFixture("gone")}))
 	journal := objectFrom(t, api(t, app, "GET", "/v1/journal/2026-10-31", nil))
 	objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+journal.ID, map[string]any{"links": []string{note.ID}}))
 	if rr := api(t, app, "DELETE", "/v1/trash/"+journal.ID, nil); rr.Code != 404 {
@@ -110,7 +110,7 @@ func TestTrashPurgeKeepsAntiResurrectionAndCleansReferences(t *testing.T) {
 		"operations": []any{map[string]any{
 			"op_id": "op-purged-id-1", "action": "put", "base_revision": note.Revision,
 			"object": map[string]any{
-				"id": note.ID, "type_id": "note", "title": "Resurrected", "content": "",
+				"id": note.ID, "type_id": "note", "title": "Resurrected", "document": documentFixture(""),
 				"properties": map[string]any{}, "links": []string{},
 				"created_at": now(), "updated_at": now(),
 			},
@@ -192,7 +192,7 @@ func TestTrashSyncPullDeliversDeletionAndRestore(t *testing.T) {
 		"operations": []any{map[string]any{
 			"op_id": "op-trashed-put-1", "action": "put", "base_revision": note.Revision,
 			"object": map[string]any{
-				"id": note.ID, "type_id": "note", "title": note.Title, "content": "stale",
+				"id": note.ID, "type_id": "note", "title": note.Title, "document": documentFixture("stale"),
 				"properties": map[string]any{}, "links": []string{},
 				"created_at": note.CreatedAt, "updated_at": now(),
 			},
@@ -230,7 +230,7 @@ func TestTrashSyncPullDeliversDeletionAndRestore(t *testing.T) {
 
 func TestTrashFiltersAndOrdersByDeletedAtDesc(t *testing.T) {
 	app, _, _ := makeApp(t)
-	first := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Alpha note", "content": "needle body"}))
+	first := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Alpha note", "document": documentFixture("needle body")}))
 	second := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "book", "title": "Beta book"}))
 	if rr := api(t, app, "DELETE", "/v1/objects/"+first.ID, nil); rr.Code != 200 {
 		t.Fatal(rr.Body.String())
@@ -291,7 +291,7 @@ func TestRestoreResolvesTitleCollisionAndDropsPurgedReferences(t *testing.T) {
 func TestJournalInTrashIsRestoredWhenOpened(t *testing.T) {
 	app, _, _ := makeApp(t)
 	journal := objectFrom(t, api(t, app, "GET", "/v1/journal/2026-10-29", nil))
-	journal = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+journal.ID, map[string]any{"content": "Kept text"}))
+	journal = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+journal.ID, documentPatchPayload(t, app, journal.ID, map[string]any{"document": documentFixture("Kept text")})))
 	if rr := api(t, app, "DELETE", "/v1/objects/"+journal.ID, nil); rr.Code != 200 {
 		t.Fatal(rr.Body.String())
 	}
@@ -348,7 +348,7 @@ func TestSyncPushDeleteMovesObjectToTrash(t *testing.T) {
 
 func TestTrashSurvivesRestart(t *testing.T) {
 	app, path, key := makeApp(t)
-	note := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Persistent trash", "content": "still here"}))
+	note := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Persistent trash", "document": documentFixture("still here")}))
 	if rr := api(t, app, "DELETE", "/v1/objects/"+note.ID, nil); rr.Code != 200 {
 		t.Fatal(rr.Body.String())
 	}

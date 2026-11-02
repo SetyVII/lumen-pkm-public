@@ -1,21 +1,26 @@
 package main
 
-import "time"
+import (
+	"lumen/server/internal/document"
+	"time"
+)
 
 type Object struct {
-	ID            string         `json:"id"`
-	TypeID        string         `json:"type_id"`
-	Title         string         `json:"title"`
-	Content       string         `json:"content"`
-	Properties    map[string]any `json:"properties"`
-	Links         []string       `json:"links"`
-	PropertyLinks []string       `json:"property_links,omitempty"`
-	CreatedAt     string         `json:"created_at"`
-	UpdatedAt     string         `json:"updated_at"`
-	SyncStatus    string         `json:"sync_status,omitempty"`
-	SyncError     string         `json:"sync_error,omitempty"`
-	Revision      uint64         `json:"revision,omitempty"`
-	Incarnation   string         `json:"incarnation,omitempty"`
+	Document      *document.Document `json:"document,omitempty"`
+	DocumentLinks []string           `json:"document_links,omitempty"`
+	ID            string             `json:"id"`
+	TypeID        string             `json:"type_id"`
+	Title         string             `json:"title"`
+	Content       string             `json:"content"`
+	Properties    map[string]any     `json:"properties"`
+	Links         []string           `json:"links"`
+	PropertyLinks []string           `json:"property_links,omitempty"`
+	CreatedAt     string             `json:"created_at"`
+	UpdatedAt     string             `json:"updated_at"`
+	SyncStatus    string             `json:"sync_status,omitempty"`
+	SyncError     string             `json:"sync_error,omitempty"`
+	Revision      uint64             `json:"revision,omitempty"`
+	Incarnation   string             `json:"incarnation,omitempty"`
 }
 
 type ObjectType struct {

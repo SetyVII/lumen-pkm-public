@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lumen.local/contracts/document-commands.schema.json",
+  "title": "Lumen document command batch",
+  "type": "array",
+  "maxItems": 1000,
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "type"
+    ],
+    "properties": {
+      "type": {
+        "enum": [
+          "insert",
+          "append",
+          "append_section",
+          "replace",
+          "replace_inline",
+          "set_attrs",
+          "delete",
+          "move",
+          "copy",
+          "wrap",
+          "unwrap",
+          "flatten_columns",
+          "table_insert_row",
+          "table_delete_row",
+          "table_move_row",
+          "table_insert_column",
+          "table_delete_column",
+          "table_move_column",
+          "table_set_width",
+          "table_sort"
+        ]
+      },
+      "node_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^\\S+$"
+      },
+      "node_ids": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^\\S+$"
+        }
+      },
+      "parent_id": {
+        "type": "string"
+      },
+      "position": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "node": {
+        "$ref": "document.schema.json#/$defs/node"
+      },
+      "content": {
+        "type": "array",
+        "items": {
+          "$ref": "document.schema.json#/$defs/inline"
+        }
+      },
+      "attrs": {
+        "type": "object"
+      },
+      "new_ids": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^\\S+$"
+        }
+      },
+      "column_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^\\S+$"
+      },
+      "width": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "direction": {
+        "enum": [
+          "asc",
+          "desc"
+        ]
+      },
+      "numeric": {
+        "type": "boolean"
+      }
+    }
+  },
+  "description": "An atomic batch. Individual command requirements and destination position semantics are documented in docs/architecture/document-v2.md and enforced by the domain."
+}

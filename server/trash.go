@@ -1,7 +1,9 @@
 package main
 
 import (
+	"database/sql"
 	"errors"
+	"lumen/server/internal/document"
 	"sort"
 	"strconv"
 	"strings"
@@ -81,8 +83,8 @@ func (a *App) restoreObjectData(id string) (Object, []Record, [][2]string, error
 // drops references to objects that were permanently purged while this object
 // was in the trash, removes attachments that no longer exist, resolves title
 // collisions and rebuilds derived relations. It is deliberately lenient about
-// property values: a schema edit during the object's stay in the trash must not
-// make the object impossible to restore.
+// unrelated scalar properties: schema edits do not silently rewrite them.
+// Object relations retain pending IDs and validate every known target type.
 func (a *App) prepareRestoredObject(o *Object) error {
 	typ, err := a.store.Type(o.TypeID)
 	if err != nil {
@@ -96,46 +98,19 @@ func (a *App) prepareRestoredObject(o *Object) error {
 	if o.Properties == nil {
 		o.Properties = map[string]any{}
 	}
-	links := make([]string, 0, len(o.Links))
-	seen := map[string]bool{}
-	for _, id := range o.Links {
-		if id == "" || id == o.ID || seen[id] || !a.referenceExists(id) {
-			continue
-		}
-		seen[id] = true
-		links = append(links, id)
+	if err := a.filterPurgedReferences(o); err != nil {
+		return err
 	}
-	o.Links = links
-	for _, raw := range typ.Properties {
-		schema, ok := raw.(map[string]any)
-		if !ok || schema["type"] != "object" {
-			continue
-		}
-		key := schemaKey(schema)
-		switch value := o.Properties[key].(type) {
-		case string:
-			if value != "" && value != o.ID && !a.referenceExists(value) {
-				delete(o.Properties, key)
-			}
-		case []any:
-			clean := make([]any, 0, len(value))
-			for _, entry := range value {
-				id, ok := entry.(string)
-				if ok && id != o.ID && !a.referenceExists(id) {
-					continue
-				}
-				clean = append(clean, entry)
-			}
-			if len(clean) == 0 {
-				delete(o.Properties, key)
-			} else {
-				o.Properties[key] = clean
-			}
-		}
+	if err := a.sanitizeRestoredAssets(o); err != nil {
+		return err
 	}
-	a.sanitizeRestoredAssets(o)
-	a.recomputePropertyLinks(o, typ)
-	return nil
+	if err := a.validateMediaCreation(o, true); err != nil {
+		return err
+	}
+	if err := a.normalizeObjectDocument(o); err != nil {
+		return err
+	}
+	return a.validateRestoredRelations(o, typ)
 }
 
 // referenceExists reports whether a relation target can still be resolved,
@@ -147,30 +122,73 @@ func (a *App) referenceExists(id string) bool {
 // sanitizeRestoredAssets removes attachment metadata whose blob was purged
 // while the owner was in the trash. A dangling cover would otherwise survive
 // the restore and fail on the next download.
-func (a *App) sanitizeRestoredAssets(o *Object) {
-	missing := func(id string) bool {
-		return id != "" && !a.store.Has("asset", id)
+func (a *App) sanitizeRestoredAssets(o *Object) error {
+	cache := map[string]bool{}
+	missing := func(id string) (bool, error) {
+		if id == "" {
+			return false, nil
+		}
+		if value, ok := cache[id]; ok {
+			return value, nil
+		}
+		var asset Asset
+		err := a.store.Get("asset", id, &asset)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
+		absent := errors.Is(err, sql.ErrNoRows)
+		cache[id] = absent
+		return absent, nil
 	}
-	if id, ok := o.Properties["image_asset_id"].(string); ok && missing(id) {
-		delete(o.Properties, "image_asset_id")
+	if o.Document != nil {
+		missingAssets := map[string]bool{}
+		for _, ref := range document.References(*o.Document) {
+			if ref.AssetID == "" {
+				continue
+			}
+			absent, err := missing(ref.AssetID)
+			if err != nil {
+				return err
+			}
+			if absent {
+				missingAssets[ref.AssetID] = true
+			}
+		}
+		removeCanonicalReferences(o, nil, missingAssets)
 	}
-	if id, ok := o.Properties["asset_id"].(string); ok && missing(id) {
-		delete(o.Properties, "asset_id")
+	for _, key := range []string{"image_asset_id", "asset_id"} {
+		id, _ := o.Properties[key].(string)
+		if o.Properties["media_state"] == "upload_pending" && id != "" && id == mediaSourceID(*o) {
+			continue
+		}
+		absent, err := missing(id)
+		if err != nil {
+			return err
+		}
+		if absent {
+			delete(o.Properties, key)
+		}
 	}
 	raw, ok := o.Properties["assets"].([]any)
 	if !ok {
-		return
+		return nil
 	}
 	clean := make([]any, 0, len(raw))
 	for _, item := range raw {
 		if entry, ok := item.(map[string]any); ok {
-			if id, _ := entry["id"].(string); missing(id) {
+			id, _ := entry["id"].(string)
+			absent, err := missing(id)
+			if err != nil {
+				return err
+			}
+			if absent {
 				continue
 			}
 		}
 		clean = append(clean, item)
 	}
 	o.Properties["assets"] = clean
+	return nil
 }
 
 // uniqueRestoreTitle keeps workspace titles unique. A trashed title is free

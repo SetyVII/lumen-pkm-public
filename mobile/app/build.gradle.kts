@@ -37,6 +37,8 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    sourceSets.getByName("androidTest").assets.directories.add(rootProject.file("../contracts/fixtures").absolutePath)
+
     buildFeatures {
         compose = true
         buildConfig = true
@@ -87,6 +89,8 @@ dependencies {
     implementation(libs.androidx.exifinterface)
     implementation(libs.kotlinx.coroutines.android)
     // Parse new Markdown locally; existing native blocks retain their metadata.
+    implementation("ru.noties:jlatexmath-android:0.2.0")
+    implementation("org.jsoup:jsoup:1.23.2")
     implementation("org.commonmark:commonmark:0.27.1")
     implementation("org.commonmark:commonmark-ext-gfm-strikethrough:0.27.1")
 

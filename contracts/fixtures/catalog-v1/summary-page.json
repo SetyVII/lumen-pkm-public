@@ -1,0 +1,27 @@
+{
+  "projection": "catalog/v1",
+  "entries": [
+    {
+      "id": "catalog-example",
+      "type_id": "note",
+      "title": "Ejemplo",
+      "created_at": "2026-11-02T00:00:00Z",
+      "updated_at": "2026-11-02T00:00:00Z",
+      "revision": 3,
+      "properties": {
+        "status": "todo"
+      },
+      "omitted_properties": [
+        "large_custom_value"
+      ],
+      "excerpt": "Texto breve 😀",
+      "excerpt_truncated": true
+    }
+  ],
+  "requested_properties": [
+    "status",
+    "large_custom_value"
+  ],
+  "next_cursor": "",
+  "has_more": false
+}

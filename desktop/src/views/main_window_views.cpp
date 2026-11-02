@@ -116,7 +116,7 @@ void MainWindow::renderJournalTasks(QVBoxLayout *layout, QDate targetDay) {
                         const QString id = str(t, "id");
                         auto p = t.value("properties").toObject();
                         p["due_date"] = tomorrow.toString(Qt::ISODate);
-                        api.patch("/v1/objects/" + id, QJsonObject{{"properties", p}}, [this](QJsonValue v, QString) {
+                        api.patch("/v1/objects/" + id, QJsonObject{{"properties", p}, {"base_revision", t.value("revision")}}, [this](QJsonValue v, QString) {
                             if (!v.isNull()) rememberObject(v.toObject());
                         });
                     }
@@ -234,7 +234,7 @@ void MainWindow::renderTaskItemRow(QVBoxLayout *layout, const QJsonObject &t) {
             auto existing = objectFor(id);
             auto p = existing.value("properties").toObject();
             p["status"] = isDone ? "todo" : "done";
-            api.patch("/v1/objects/" + id, QJsonObject{{"properties", p}}, [this](QJsonValue v, QString err) {
+            api.patch("/v1/objects/" + id, QJsonObject{{"properties", p}, {"base_revision", existing.value("revision")}}, [this](QJsonValue v, QString err) {
                 if (err.isEmpty()) {
                     rememberObject(v.toObject());
                     renderEditor(route == "journal");
@@ -296,6 +296,7 @@ void MainWindow::configureViews(LumenViews *views) {
             newObject(tid);
         };
         views->onPatch = [this, guard = QPointer<LumenViews>(views)](QString id, QJsonObject patch) {
+            patch["base_revision"] = objectFor(id).value("revision");
             api.patch("/v1/objects/" + id, patch, [this, guard](QJsonValue v, QString e) {
                 if (!e.isEmpty()) {
                     error(e);
@@ -344,8 +345,6 @@ void MainWindow::showCollection(QString tid, QJsonObject spec, QString queryId, 
             rememberActiveViewSpec();
         route = queryId.isEmpty() ? "gallery" : "query";
         typeFilter = tid;
-        // Capacities object dashboard: the active section of this type page
-        // (the standalone query page keeps its own route without a dashboard).
         typeSection = queryId.isEmpty() ? section : QString("all");
         current = queryId.isEmpty() ? QJsonObject{} : objectFor(queryId);
         resetBody();
@@ -453,7 +452,7 @@ void MainWindow::showTasks(const QString &tab) {
             auto p = existing.value("properties").toObject();
             for (auto it = patch.begin(); it != patch.end(); ++it)
                 p.insert(it.key(), it.value());
-            api.patch("/v1/objects/" + id, QJsonObject{{"properties", p}}, [this](QJsonValue v, QString err) {
+            api.patch("/v1/objects/" + id, QJsonObject{{"properties", p}, {"base_revision", existing.value("revision")}}, [this](QJsonValue v, QString err) {
                 if (err.isEmpty()) {
                     auto updated = v.toObject();
                     rememberObject(updated);
@@ -498,7 +497,7 @@ void MainWindow::showTasks(const QString &tab) {
                 auto existing = objectFor(id);
                 auto p = existing.value("properties").toObject();
                 p["due_date"] = newDate.toString(Qt::ISODate);
-                api.patch("/v1/objects/" + id, QJsonObject{{"properties", p}}, [this](QJsonValue v, QString) {
+                api.patch("/v1/objects/" + id, QJsonObject{{"properties", p}, {"base_revision", existing.value("revision")}}, [this](QJsonValue v, QString) {
                     if (!v.isNull()) {
                         rememberObject(v.toObject());
                         if (activeTasks) {

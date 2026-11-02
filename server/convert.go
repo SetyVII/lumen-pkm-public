@@ -11,13 +11,6 @@ import (
 	"time"
 )
 
-// Type conversion (Capacities: reference/content-types#type-conversions).
-//
-// Converting an object keeps its identity, title, content and links; only the
-// type_id and the property document change. Properties are moved one by one:
-// an explicit property_map wins, then a same-named target property of the same
-// kind accepts the value, and anything that cannot move is written into the
-// content as a "Property <name>: <value>" line. Nothing is ever dropped.
 
 // propertySchema is the declared shape of one property of a type. A legacy
 // property declared as a bare string has an empty Kind: the store does not
@@ -428,6 +421,14 @@ func (a *App) convertObjectData(o Object, req convertRequest) (Object, error) {
 	o.Properties = properties
 	if len(leftovers) > 0 {
 		block := strings.Join(leftovers, "\n")
+		if o.Document != nil {
+			appendPlainText(&o, block)
+			o.UpdatedAt = now()
+			if err := a.validateObject(&o); err != nil {
+				return o, err
+			}
+			return o, nil
+		}
 		if strings.TrimSpace(o.Content) == "" {
 			o.Content = block
 		} else {

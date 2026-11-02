@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lumen.local/contracts/clipboard.schema.json",
+  "title": "Lumen structured clipboard v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "clipboard_version",
+    "source_object_id",
+    "operation",
+    "document"
+  ],
+  "properties": {
+    "clipboard_version": {
+      "const": 1
+    },
+    "source_object_id": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[^\\s\\x00-\\x1f\\x7f]*$"
+    },
+    "operation": {
+      "enum": [
+        "copy",
+        "move"
+      ]
+    },
+    "document": {
+      "$ref": "https://lumen.local/contracts/document.schema.json"
+    }
+  }
+}

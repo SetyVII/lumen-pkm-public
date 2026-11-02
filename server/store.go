@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,10 +20,9 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// Schema 4 adds the blob_chunks side table used by chunked uploads; the
-// generic records table is unchanged, but the bump stops a pre-api-v2 binary
-// from opening a workspace whose large attachments it would not find.
-const schemaVersion = 4
+// Schema 6 includes canonical documents and bounded encrypted write receipts. Older
+// servers must not open the store and silently discard the new document field.
+const schemaVersion = 6
 
 type Store struct {
 	db    *sql.DB
@@ -140,6 +140,21 @@ func (s *Store) putBatch(records []Record, deletes [][2]string, blobs []BlobReco
 	syncOps := make([]SyncOpRecord, 0)
 	versions := make([]VersionRecord, 0)
 	for _, record := range records {
+		if record.Kind == "object" {
+			switch value := record.Value.(type) {
+			case *Object:
+				if err := canonicalizeStoredObject(value); err != nil {
+					return err
+				}
+			case Object:
+				if err := canonicalizeStoredObject(&value); err != nil {
+					return err
+				}
+				record.Value = value
+			default:
+				return errors.New("object record requires Object")
+			}
+		}
 		switch record.Kind {
 		case "sync_op":
 			if op, ok := record.Value.(SyncOpRecord); ok {
@@ -194,8 +209,20 @@ func (s *Store) putBatch(records []Record, deletes [][2]string, blobs []BlobReco
 		if err = recordSyncChange(tx, record.kind, record.id, "put"); err != nil {
 			return err
 		}
+		if err = s.trackReceipt(tx, record.kind, record.id, record.payload); err != nil {
+			return err
+		}
 	}
 	for _, record := range deletes {
+		if record[0] == "receipts" {
+			if _, err = tx.Exec("DELETE FROM records WHERE (kind,id) IN (SELECT kind,id FROM receipt_results WHERE object_id=?)", record[1]); err != nil {
+				return err
+			}
+			if _, err = tx.Exec("DELETE FROM receipt_results WHERE object_id=?", record[1]); err != nil {
+				return err
+			}
+			continue
+		}
 		if record[0] == "versions" {
 			// Version snapshots live in their own table and are server-side
 			// only. Permanent purge must delete them with the object; a
@@ -241,6 +268,9 @@ func (s *Store) putBatch(records []Record, deletes [][2]string, blobs []BlobReco
 		if _, err = tx.Exec("INSERT INTO blob_chunks(asset_id,seq,payload) VALUES(?,?,?)", chunk.AssetID, chunk.Seq, payload); err != nil {
 			return err
 		}
+	}
+	if err = s.pruneReceiptResults(tx); err != nil {
+		return err
 	}
 	if err = putVersions(tx, sealedVersions); err != nil {
 		return err
@@ -294,7 +324,9 @@ func OpenStore(path string, key []byte) (*Store, error) {
 		CREATE TABLE IF NOT EXISTS blob_chunks(asset_id TEXT NOT NULL,seq INTEGER NOT NULL,payload BLOB NOT NULL,PRIMARY KEY(asset_id,seq));
 		CREATE TABLE IF NOT EXISTS sync_changes(seq INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT NOT NULL,id TEXT NOT NULL,op TEXT NOT NULL,changed_at TEXT NOT NULL);
 		CREATE INDEX IF NOT EXISTS sync_changes_lookup ON sync_changes(kind,id,seq);
-		CREATE TABLE IF NOT EXISTS sync_ops(op_id TEXT PRIMARY KEY,device_id TEXT NOT NULL,applied_at TEXT NOT NULL,head_seq INTEGER NOT NULL);
+		CREATE TABLE IF NOT EXISTS receipt_results(kind TEXT NOT NULL,id TEXT NOT NULL,object_id TEXT NOT NULL,created_at TEXT NOT NULL,expires_at TEXT NOT NULL,result_bytes INTEGER NOT NULL,PRIMARY KEY(kind,id));
+ CREATE INDEX IF NOT EXISTS receipt_results_age ON receipt_results(created_at);
+ CREATE TABLE IF NOT EXISTS sync_ops(op_id TEXT PRIMARY KEY,device_id TEXT NOT NULL,applied_at TEXT NOT NULL,head_seq INTEGER NOT NULL);
 		CREATE TABLE IF NOT EXISTS object_versions(object_id TEXT NOT NULL,revision INTEGER NOT NULL,captured_at TEXT NOT NULL,payload BLOB NOT NULL,PRIMARY KEY(object_id,revision));
 		CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);`)
 	if err != nil {
@@ -602,35 +634,6 @@ func (s *Store) migrateV2(tx *sql.Tx) error {
 	return nil
 }
 
-func (s *Store) rebuildIndex() error {
-	objectRows, err := s.List("object")
-	if err != nil {
-		return err
-	}
-	objects := make([]Object, 0, len(objectRows))
-	for _, raw := range objectRows {
-		var o Object
-		if err = json.Unmarshal(raw, &o); err != nil {
-			return err
-		}
-		objects = append(objects, o)
-	}
-	typeRows, err := s.List("type")
-	if err != nil {
-		return err
-	}
-	types := make([]ObjectType, 0, len(typeRows))
-	for _, raw := range typeRows {
-		var t ObjectType
-		if err = json.Unmarshal(raw, &t); err != nil {
-			return err
-		}
-		types = append(types, t)
-	}
-	s.index.rebuild(objects, types)
-	return nil
-}
-
 func (s *Store) applyIndex(records []Record, deletes [][2]string) {
 	if s.index == nil {
 		return
@@ -733,30 +736,7 @@ func (s *Store) decrypt(data []byte, aad string) ([]byte, error) {
 	return s.aead.Open(nil, data[:n], data[n:], []byte(aad))
 }
 func (s *Store) Put(kind, id string, value any) error {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	ciphertext, err := s.encrypt(raw, kind+"/"+id)
-	if err != nil {
-		return err
-	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err = tx.Exec("INSERT INTO records(kind,id,payload) VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload", kind, id, ciphertext); err != nil {
-		return err
-	}
-	if err = recordSyncChange(tx, kind, id, "put"); err != nil {
-		return err
-	}
-	if err = tx.Commit(); err != nil {
-		return err
-	}
-	s.applyIndex([]Record{{Kind: kind, ID: id, Value: value}}, nil)
-	return nil
+	return s.PutBatch([]Record{{Kind: kind, ID: id, Value: value}}, nil)
 }
 func (s *Store) Get(kind, id string, out any) error {
 	var data []byte
@@ -1133,6 +1113,18 @@ func (s *Store) Fsck() error {
 			return fmt.Errorf("outbox/%s must not exist after the Logseq removal", id)
 		case "system":
 			// key-check and server-id are opaque metadata.
+		case "document_receipt":
+			var receipt DocumentReceipt
+			if err := json.Unmarshal(raw, &receipt); err != nil || len(receipt.Digest) != 64 || receipt.Object.ID == "" || receipt.Object.Revision == 0 {
+				rows.Close()
+				return fmt.Errorf("invalid document receipt %s", id)
+			}
+		case "sync_receipt":
+			var receipt storedSyncReceipt
+			if err := json.Unmarshal(raw, &receipt); err != nil || len(receipt.Digest) != 64 || receipt.Receipt.OpID != id {
+				rows.Close()
+				return fmt.Errorf("invalid sync receipt %s", id)
+			}
 		default:
 			rows.Close()
 			return fmt.Errorf("unknown record kind %q", kind)
@@ -1253,15 +1245,24 @@ func (s *Store) Fsck() error {
 		}
 	}
 	for id, o := range objects {
+		if o.Document == nil {
+			return fmt.Errorf("object/%s has no canonical document", id)
+		}
+		expected := cloneObject(o)
+		if err := canonicalizeStoredObject(&expected); err != nil {
+			return fmt.Errorf("object/%s document: %w", id, err)
+		}
+		if expected.Content != o.Content || !slices.Equal(expected.DocumentLinks, o.DocumentLinks) {
+			return fmt.Errorf("object/%s document projections differ from canonical content", id)
+		}
+		// Valid object identities may precede their targets during offline sync.
+		// Check the relation/index shape without treating arrival order as damage.
 		for _, target := range append(append([]string{}, o.Links...), o.PropertyLinks...) {
 			if target == id {
 				return fmt.Errorf("object/%s links to itself", id)
 			}
-			if _, ok := objects[target]; ok {
-				continue
-			}
-			if _, ok := tombstones[target]; !ok {
-				return fmt.Errorf("object/%s links to missing object %s", id, target)
+			if !validObjectReferenceID(target) {
+				return fmt.Errorf("object/%s links to invalid object identity %q", id, target)
 			}
 		}
 	}

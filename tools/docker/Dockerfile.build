@@ -1,4 +1,4 @@
 FROM debian:bookworm-slim
-RUN apt-get update -qq && apt-get install -y --no-install-recommends g++ cmake qt6-base-dev qt6-svg-dev qt6-pdf-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update -qq && apt-get install -y --no-install-recommends g++ cmake ninja-build qt6-base-dev qt6-svg-dev qt6-pdf-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 CMD ["sh","-c","cmake -S . -B build-container -DCMAKE_BUILD_TYPE=Release && cmake --build build-container --parallel 2 && mkdir -p bin && cp build-container/lumen bin/lumen"]

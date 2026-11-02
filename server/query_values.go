@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"html"
+	"lumen/server/internal/document"
 	"regexp"
 	"strings"
 	"time"
@@ -91,6 +92,9 @@ var htmlTag = regexp.MustCompile(`<[^>]*>`)
 // then rich_text, then the plain content field; this mirrors that precedence so
 // "content empty" agrees with what the user sees.
 func objectHasText(o Object) bool {
+	if o.Document != nil {
+		return strings.TrimSpace(document.PlainText(*o.Document)) != ""
+	}
 	if blocks, ok := o.Properties["blocks"].([]any); ok && len(blocks) > 0 {
 		for _, raw := range blocks {
 			if blockHasText(raw) {

@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.net.URI
@@ -80,7 +81,6 @@ class LumenRepository(
             syncStatus = "pending",
             syncError = "",
         )
-        if (!append) db.deleteOutboxForObject(updated.id)
         val op = putOp(updated, append)
         db.saveObject(updated, enqueue = op)
         bump()
@@ -119,6 +119,7 @@ class LumenRepository(
             typeId = typeId,
             title = uniqueTitle(title.ifBlank { "Sin título" }, typeId),
             content = content,
+            document = CanonicalDocument.fromText(content),
             properties = initialProperties,
             links = links,
             createdAt = timestamp,
@@ -128,32 +129,31 @@ class LumenRepository(
         )
         db.saveObject(obj, enqueue = putOp(obj, append = false))
         if (journalDate != null) {
-            appendJournal(journalDate, "- ${obj.title}", listOf(obj.id), null)
+            appendJournalObject(journalDate, obj.id)
         }
         bump()
         return obj
     }
 
     fun appendJournal(date: String, content: String, links: List<String>, coverAssetId: String?) {
+        appendJournalDocument(date, CanonicalDocument.fromText(content), links, coverAssetId)
+    }
+
+    private fun appendJournalObject(date: String, objectId: String) {
+        appendJournalDocument(date, CanonicalDocument.empty().withBlocks(JSONArray().put(documentNode("object_embed",
+            JSONObject().put("object_id", objectId).put("view", "link_block")))))
+    }
+
+    fun appendJournalDocument(date: String, addition: CanonicalDocument, links: List<String> = emptyList(), coverAssetId: String? = null) {
         val journal = ensureJournal(date)
-        val addition = LumenObject("append", "note", "").withPlainContent(content, db.objects())
-        val newBlocks = addition.properties.optJSONArray("blocks") ?: org.json.JSONArray()
-        val oldBlocks = journal.properties.optJSONArray("blocks")
-            ?: LumenObject("old", "note", "").withPlainContent(journal.content, db.objects()).properties.optJSONArray("blocks")
-            ?: org.json.JSONArray()
-        val combined = org.json.JSONArray()
-        for (i in 0 until oldBlocks.length()) combined.put(JSONObject(oldBlocks.getJSONObject(i).toString()))
-        for (i in 0 until newBlocks.length()) combined.put(JSONObject(newBlocks.getJSONObject(i).toString()))
-        val props = JSONObject(journal.properties.toString()).put("blocks", combined).put("rich_text", JSONObject.NULL)
+        val combined = journal.document.blocks()
+        val newBlocks = addition.blocks()
+        for (i in 0 until newBlocks.length()) combined.put(newBlocks.getJSONObject(i))
+        val props = JSONObject(journal.properties.toString())
         if (!coverAssetId.isNullOrBlank() && props.optString("image_asset_id").isBlank()) props.put("image_asset_id", coverAssetId)
-        val updated = journal.copy(content = nativeDocumentText(combined), links = (journal.links + links + nativeReferenceIds(newBlocks)).distinct(),
-            properties = props, updatedAt = nowIso(), syncStatus = "pending")
-        // The local row keeps the complete journal. The wire operation carries
-        // only the new block/relations so the server can append without
-        // duplicating everything that was already there.
-        val deltaProps = JSONObject().put("blocks", newBlocks).put("rich_text", JSONObject.NULL)
-        if (!coverAssetId.isNullOrBlank()) deltaProps.put("image_asset_id", coverAssetId)
-        val delta = updated.copy(content = addition.content, links = (links + nativeReferenceIds(newBlocks)).distinct(), properties = deltaProps)
+        val updated = journal.withDocument(journal.document.withBlocks(combined)).copy(
+            links = (journal.links + links).distinct(), properties = props, updatedAt = nowIso(), syncStatus = "pending")
+        val delta = updated.withDocument(addition).copy(links = links)
         db.saveObject(updated, enqueue = putOp(delta, append = true))
         bump()
     }
@@ -213,6 +213,7 @@ class LumenRepository(
             val title = (caption.ifBlank { "Momento" }) + " · " + LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
             val props = JSONObject().apply {
                 put("mime", processed.mime)
+                put("media_state", "upload_pending")
                 put("image_asset_id", assetId)
                 put("asset_id", assetId)
                 put("caption", caption)
@@ -234,8 +235,9 @@ class LumenRepository(
             )
             db.saveObject(image, enqueue = putOp(image, append = false))
             db.insertOutbox(assetOp(asset, full.absolutePath))
-            val block = "![${caption.ifBlank { "Foto del día" }}](lumen://object/$imageId)"
-            if (appendToJournal) appendJournal(date, block, listOf(imageId), assetId)
+            val block = documentNode("image", JSONObject().put("asset_id", assetId).put("object_id", imageId)
+                .put("width", processed.width).put("height", processed.height).put("caption", caption).put("alignment", "center").put("fit", "contain"))
+            if (appendToJournal) appendJournalDocument(date, CanonicalDocument.empty().withBlocks(JSONArray().put(block)), coverAssetId = assetId)
             bump()
             image
         }
@@ -264,7 +266,9 @@ class LumenRepository(
         val file = File(File(context.filesDir, "assets"), "$assetId.$extension")
         SecureMedia.save(vault, file, bytes)
         val asset = LumenAsset(assetId, objectId = "", name = originalName, mime = mime, size = bytes.size.toLong(), createdAt = nowIso(), localPath = file.absolutePath)
-        val obj = createObject(type, originalName, properties = JSONObject().put("asset_id", assetId).put("mime", mime))
+        val obj = createObject(type, originalName, properties = JSONObject().put("asset_id", assetId).put("mime", mime).apply {
+            if (type == "pdf") put("media_state", "upload_pending")
+        })
         // The object ID is generated by createObject; bind the asset to it.
         val boundAsset = asset.copy(objectId = obj.id)
         db.saveAsset(boundAsset)
@@ -286,7 +290,7 @@ class LumenRepository(
         }
         if (existing != null) {
             val updated = applyWebLinkPreview(existing.id, preview, imageBytes) ?: existing
-            if (journalDate != null) appendJournal(journalDate, "- ${existing.title}", listOf(existing.id), null)
+            if (journalDate != null) appendJournalObject(journalDate, existing.id)
             return updated
         }
         val webId = UUID.randomUUID().toString()
@@ -319,7 +323,7 @@ class LumenRepository(
         )
         db.saveObject(web, enqueue = putOp(web, append = false))
         if (journalDate != null) {
-            appendJournal(journalDate, "- ${web.title}\n  $clean", listOf(web.id), null)
+            appendJournalObject(journalDate, web.id)
         }
         bump()
         return web
@@ -446,29 +450,47 @@ class LumenRepository(
         bump()
     }
 
-        /**
+    /**
      * Re-enqueues the whole local library so a newly paired server receives it
      * (the "resend everything" option). Operations already waiting in the
      * outbox are not duplicated. Puts carry the current revision as
-     * base_revision: an up-to-date server answers with a no-op and a divergent
-     * one merges both versions, so this never overwrites newer server data.
+     * base_revision: a divergent server returns a conflict and retains the
+     * local pending edit for explicit resolution.
      * Assets with a local sealed copy are re-uploaded too.
      *
      * Returns (objects, assets) queued.
      */
+    /** Explicit recovery: copy the full editor/metadata to a new note; never revive the deleted ID/file. */
+    fun recoverRemoteDeletedDraftAsNoteCopy(id:String):LumenObject {
+        require(db.isRemoteDeletionBlocked(id)){"No hay borrado remoto pendiente"}
+        db.recoveryCopyId(id)?.let {copyId->db.getObject(copyId)?.let{return it}}
+        val source=db.getObject(id)?:error("No existe el borrador local")
+        val newId=UUID.randomUUID().toString()
+        val copied=CanonicalDocument.empty().withBlocks(pasteDocumentClipboard(documentClipboard(id,source.document.blocks()),newId))
+        val stamp=nowIso()
+        val recovered=source.copy(id=newId,typeId="note",title=uniqueTitle(source.title+" (copia recuperada)","note"),
+            properties=JSONObject(source.properties.toString()).put("recovered_from_object_id",id).put("recovered_from_type_id",source.typeId),
+            createdAt=stamp,updatedAt=stamp,revision=0,incarnation="",syncStatus="pending",syncError="").withDocument(copied)
+        db.saveRecoveryCopy(id,recovered,putOp(recovered,append=false));bump();return recovered
+    }
+
     fun enqueueAllForResend(): Pair<Int, Int> {
-        val pending = db.outbox(Int.MAX_VALUE).map { it.objectId to it.action }.toHashSet()
+        val outbox = db.outbox(Int.MAX_VALUE)
+        val pending = outbox.map { it.objectId to it.action }.toHashSet()
+        val pendingAssets = outbox.filter { it.action == "asset" }.mapNotNull { it.payload.optJSONObject("asset")?.optString("id") }.toSet()
+        val localAssets = db.assets().filter { it.localPath.isNotBlank() && File(it.localPath).exists() }
+        val uploadableAssetIds = localAssets.map { it.id }.toSet() + pendingAssets
         var queuedObjects = 0
         var queuedAssets = 0
         db.objects().forEach { obj ->
             if ((obj.id to "put") in pending) return@forEach
-            db.insertOutbox(putOp(obj, append = false))
+            db.insertOutbox(putOp(mediaUploadSnapshot(obj, uploadableAssetIds), append = false))
             queuedObjects++
         }
-        db.assets().forEach { asset ->
+        localAssets.forEach { asset ->
             val path = asset.localPath
             if (path.isBlank() || !File(path).exists()) return@forEach
-            if ((asset.id to "asset") in pending) return@forEach
+            if (asset.id in pendingAssets) return@forEach
             db.insertOutbox(assetOp(asset, path))
             queuedAssets++
         }

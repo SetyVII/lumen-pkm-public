@@ -238,21 +238,7 @@ fun PageDetailScreen(
                             }
                         }
 
-                        EditorKeyboardBar(
-                            vm = vm,
-                            onInsertText = { snippet ->
-                                content = insertSnippet(content, snippet)
-                                vm.updateContent(obj.id, content.text)
-                            },
-                            onIndent = {
-                                content = indentLine(content)
-                                vm.updateContent(obj.id, content.text)
-                            },
-                            onOutdent = {
-                                content = outdentLine(content)
-                                vm.updateContent(obj.id, content.text)
-                            },
-                        )
+                        // Canonical block controls are owned by CanonicalDocumentEditor.
                     }
                 }
                 2 -> {

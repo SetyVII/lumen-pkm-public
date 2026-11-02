@@ -1,6 +1,9 @@
 package main
 
-import "net/http"
+import (
+	"lumen/server/internal/document"
+	"net/http"
+)
 
 // registerMarkdownRoutes mounts the Markdown <-> blocks utilities. They are
 // pure conversions: no store access, no side effects.
@@ -25,16 +28,29 @@ func (a *App) markdownToBlocks(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, 400, err.Error())
 		return
 	}
-	jsonResponse(w, 200, struct {
-		Blocks []Block `json:"blocks"`
-	}{blocks})
+	d, e := canonicalDocumentFromBlocks(blocks)
+	if e != nil {
+		jsonError(w, 400, e.Error())
+		return
+	}
+	jsonResponse(w, 200, map[string]any{"document": d, "blocks": blocks})
 }
 
 func (a *App) markdownFromBlocks(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Blocks *[]Block `json:"blocks"`
+		Blocks   *[]Block           `json:"blocks"`
+		Document *document.Document `json:"document"`
 	}
 	if !decodeLimit(w, r, &request, 8<<20) {
+		return
+	}
+	if request.Document != nil {
+		d, e := document.Normalize(*request.Document)
+		if e != nil {
+			jsonError(w, 400, e.Error())
+			return
+		}
+		jsonResponse(w, 200, map[string]any{"markdown": BlocksToMarkdown(documentMarkdownBlocks(d))})
 		return
 	}
 	if request.Blocks == nil {

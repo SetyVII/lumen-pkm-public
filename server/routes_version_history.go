@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"lumen/server/internal/document"
 	"net/http"
 	"strconv"
 )
@@ -17,16 +18,18 @@ type objectVersionSummary struct {
 }
 
 type objectVersionResponse struct {
-	ObjectID   string         `json:"object_id"`
-	Revision   uint64         `json:"revision"`
-	Timestamp  string         `json:"timestamp"`
-	TypeID     string         `json:"type_id"`
-	Title      string         `json:"title"`
-	Content    string         `json:"content"`
-	Properties map[string]any `json:"properties"`
-	Links      []string       `json:"links"`
-	WordCount  int            `json:"word_count"`
-	Bytes      int            `json:"bytes"`
+	Document      *document.Document `json:"document"`
+	DocumentLinks []string           `json:"document_links"`
+	ObjectID      string             `json:"object_id"`
+	Revision      uint64             `json:"revision"`
+	Timestamp     string             `json:"timestamp"`
+	TypeID        string             `json:"type_id"`
+	Title         string             `json:"title"`
+	Content       string             `json:"content"`
+	Properties    map[string]any     `json:"properties"`
+	Links         []string           `json:"links"`
+	WordCount     int                `json:"word_count"`
+	Bytes         int                `json:"bytes"`
 }
 
 func (a *App) registerVersionHistoryRoutes(mux *http.ServeMux) {
@@ -86,16 +89,18 @@ func (a *App) getObjectVersion(w http.ResponseWriter, r *http.Request) {
 		links = []string{}
 	}
 	jsonResponse(w, 200, objectVersionResponse{
-		ObjectID:   version.ObjectID,
-		Revision:   version.Revision,
-		Timestamp:  versionTimestamp(version),
-		TypeID:     version.TypeID,
-		Title:      version.Title,
-		Content:    version.Content,
-		Properties: properties,
-		Links:      links,
-		WordCount:  versionWordCount(version.Content),
-		Bytes:      versionBytes(version.Content),
+		ObjectID:      version.ObjectID,
+		Document:      cloneDocument(version.Document),
+		DocumentLinks: append([]string{}, version.DocumentLinks...),
+		Revision:      version.Revision,
+		Timestamp:     versionTimestamp(version),
+		TypeID:        version.TypeID,
+		Title:         version.Title,
+		Content:       version.Content,
+		Properties:    properties,
+		Links:         links,
+		WordCount:     versionWordCount(version.Content),
+		Bytes:         versionBytes(version.Content),
 	})
 }
 
@@ -147,11 +152,24 @@ func (a *App) restoreObjectVersion(w http.ResponseWriter, r *http.Request) {
 	}
 	restored := cloneObject(current)
 	restored.Content = version.Content
+	restored.Document = cloneDocument(version.Document)
+	restored.DocumentLinks = append([]string(nil), version.DocumentLinks...)
 	restored.Properties = cloneStringMap(version.Properties)
 	restored.Links = append([]string{}, version.Links...)
-	a.dropMissingReferences(&restored)
+	if err := a.filterPurgedReferences(&restored); err != nil {
+		jsonError(w, 500, "Could not inspect restored references")
+		return
+	}
+	if err := a.sanitizeRestoredAssets(&restored); err != nil {
+		jsonError(w, 500, "Could not inspect restored assets")
+		return
+	}
+	if err := a.validateMediaCreation(&restored, true); err != nil {
+		jsonError(w, 400, err.Error())
+		return
+	}
 	restored.UpdatedAt = now()
-	if err := a.validateObject(&restored); err != nil {
+	if err := a.validateObjectReferences(&restored, true); err != nil {
 		jsonError(w, 400, err.Error())
 		return
 	}
@@ -169,60 +187,4 @@ func parseRevision(w http.ResponseWriter, raw string) (uint64, bool) {
 		return 0, false
 	}
 	return revision, true
-}
-
-// dropMissingReferences keeps a restore usable after a linked object was
-// deleted: it restores everything that still exists instead of rejecting the
-// whole snapshot. The current title and type are preserved; only content,
-// properties and links are restored.
-func (a *App) dropMissingReferences(o *Object) {
-	links := make([]string, 0, len(o.Links))
-	for _, id := range o.Links {
-		if id == o.ID || a.isPurged(id) {
-			continue
-		}
-		if _, err := a.store.Object(id); err != nil {
-			continue
-		}
-		links = append(links, id)
-	}
-	o.Links = links
-	typ, err := a.store.Type(o.TypeID)
-	if err != nil {
-		return
-	}
-	for _, raw := range typ.Properties {
-		schema, ok := raw.(map[string]any)
-		if !ok || schema["type"] != "object" {
-			continue
-		}
-		key := schemaKey(schema)
-		switch value := o.Properties[key].(type) {
-		case string:
-			if value != o.ID && (a.isPurged(value) || objectMissing(a.store, value)) {
-				delete(o.Properties, key)
-			}
-		case []any:
-			kept := make([]any, 0, len(value))
-			for _, entry := range value {
-				id, ok := entry.(string)
-				if !ok {
-					continue
-				}
-				if id == o.ID || (!a.isPurged(id) && !objectMissing(a.store, id)) {
-					kept = append(kept, entry)
-				}
-			}
-			if len(kept) == 0 {
-				delete(o.Properties, key)
-			} else {
-				o.Properties[key] = kept
-			}
-		}
-	}
-}
-
-func objectMissing(store *Store, id string) bool {
-	_, err := store.Object(id)
-	return err != nil
 }

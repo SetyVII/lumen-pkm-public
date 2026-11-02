@@ -346,21 +346,7 @@ fun WebLinkDetailScreen(
                             }
                         }
 
-                        EditorKeyboardBar(
-                            vm = vm,
-                            onInsertText = { snippet ->
-                                notesText = insertSnippet(notesText, snippet)
-                                vm.updateContent(obj.id, notesText)
-                            },
-                            onIndent = {
-                                notesText = indentLine(notesText)
-                                vm.updateContent(obj.id, notesText)
-                            },
-                            onOutdent = {
-                                notesText = outdentLine(notesText)
-                                vm.updateContent(obj.id, notesText)
-                            },
-                        )
+                        // Canonical block controls are owned by CanonicalDocumentEditor.
                     }
                 }
                 2 -> {

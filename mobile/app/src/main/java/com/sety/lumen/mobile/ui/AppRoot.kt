@@ -38,7 +38,10 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppRoot(onLock: () -> Unit) {
-    Box(Modifier.fillMaxSize().imePadding()) { AppRootContent(onLock) }
+    val vm: LumenViewModel = viewModel()
+    androidx.compose.runtime.CompositionLocalProvider(LocalDocumentMediaImporter provides { uri -> vm.repository.importFile(uri) }) {
+        Box(Modifier.fillMaxSize().imePadding()) { AppRootContent(onLock) }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -243,7 +246,6 @@ private fun AppRootContent(onLock: () -> Unit) {
                     )
                 }
 
-                // Floating Pill Navigation Dock (Capacities Style)
                 if (WindowInsets.ime.getBottom(LocalDensity.current) == 0) LumenDock(
                     currentTab = currentTab,
                     onSelectTab = { currentTab = it },

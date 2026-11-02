@@ -43,10 +43,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.clickable
 
-/**
- * One source of truth for object-type identity. The dark pairs are measured
- * from Capacities: a deep tinted squircle with a light 200-level pictogram.
- */
+
 data class LumenTypeVisual(
     val key: String,
     val label: String,

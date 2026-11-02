@@ -6,19 +6,6 @@ import (
 	"strings"
 )
 
-// Token scopes for the developer API (backend stage api-v2).
-//
-// Capacities (developers.capacities.io) issues per-space access tokens with
-// api:read/api:write scopes on top of OAuth 2.1 + PKCE because it is a
-// multi-tenant SaaS that must mediate between many users, apps and spaces.
-// Lumen is single-user and self-hosted with exactly one bearer token
-// (LUMEN_TOKEN_FILE), so there is no third party to authorize: the scopes are
-// a deployment-level restriction of that one token, configured with the
-// LUMEN_TOKEN_SCOPES environment variable. An unconfigured variable keeps the
-// token at full access — today's behavior — so no existing client breaks.
-// OAuth 2.1 would add an authorization-code dance, client registration and
-// refresh-token storage without any isolation benefit here; when Lumen ever
-// grows multi-user spaces, that decision should be revisited.
 
 const (
 	scopeAPIRead  = "api:read"
@@ -35,9 +22,6 @@ type apiScopes struct {
 // fullAccess reports the default, unrestricted configuration.
 func (s apiScopes) fullAccess() bool { return !s.read && !s.write }
 
-// readOnlyPostPaths are POST endpoints that never mutate the store: the pure
-// Markdown conversions and the ZIP export. They stay reachable with an
-// api:read token, mirroring the read-only tooling of the Capacities API.
 var readOnlyPostPaths = map[string]bool{
 	"/v1/markdown/to-blocks":   true,
 	"/v1/markdown/from-blocks": true,

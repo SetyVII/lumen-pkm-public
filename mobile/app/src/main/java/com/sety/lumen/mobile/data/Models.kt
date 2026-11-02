@@ -21,6 +21,7 @@ data class LumenObject(
     val syncError: String = "",
     val incarnation: String = "",
     val propertyLinks: List<String> = emptyList(),
+    val document: CanonicalDocument = if (content.isEmpty()) CanonicalDocument.empty() else CanonicalDocument.fromText(content),
 ) {
     fun property(key: String): Any? = if (properties.has(key) && !properties.isNull(key)) properties.get(key) else null
     fun stringProperty(key: String): String = properties.optString(key, "")
@@ -49,17 +50,18 @@ data class LumenObject(
     val ogDescription: String get() = stringProperty("summary").ifBlank { stringProperty("description") }.ifBlank { stringProperty("og_description") }
     val siteName: String get() = stringProperty("site_name").ifBlank { stringProperty("og_site_name") }
 
+    fun withDocument(value: CanonicalDocument): LumenObject {
+        val props = JSONObject(properties.toString()).apply { remove("blocks"); remove("rich_text") }
+        return copy(document = value, content = value.plainText(), properties = props)
+    }
+
     fun withPlainContent(text: String, objects: List<LumenObject> = emptyList()): LumenObject {
-        if (text == content) return this
-        // Sync merges properties: reconcile native blocks and invalidate only
-        // the stale HTML snapshot, preserving untouched rich formatting.
-        val props = JSONObject(properties.toString())
-        val blocks = reconcileNativeDocument(this, text, objects)
-        props.put("blocks", blocks)
-        props.put("rich_text", JSONObject.NULL)
-        val references = editorTokens(text, this, objects).map { it.objectId }.filter { it.isNotBlank() }
-        val blockReferences = nativeReferenceIds(blocks)
-        return copy(content = nativeDocumentText(blocks), properties = props, links = ((links - nativeReferenceIds(properties.optJSONArray("blocks"))) + references + blockReferences).distinct())
+        if (text == document.plainText()) return this
+        require(document.blocks().length() == 0 || document.blocks().length() == 1 && document.blocks().getJSONObject(0).optString("type") == "paragraph") {
+            "Edit the structured document instead of replacing its plain-text projection"
+        }
+        val existing = document.blocks().optJSONObject(0) ?: documentParagraph()
+        return withDocument(document.withBlocks(JSONArray().put(editDocumentText(existing, text))))
     }
 
     fun toJson(): JSONObject = JSONObject().apply {
@@ -67,7 +69,8 @@ data class LumenObject(
         put("id", id)
         put("type_id", typeId)
         put("title", title)
-        put("content", content)
+        put("content", document.plainText())
+        put("document", document.toJson())
         put("properties", properties)
         put("links", JSONArray(links))
         put("created_at", createdAt)
@@ -108,7 +111,8 @@ data class LumenObject(
                 id = raw.optString("id"),
                 typeId = raw.optString("type_id", "note"),
                 title = raw.optString("title"),
-                content = raw.optString("content"),
+                content = raw.optJSONObject("document")?.let { CanonicalDocument.parse(it).plainText() } ?: raw.optString("content"),
+                document = raw.optJSONObject("document")?.let(CanonicalDocument::parse) ?: CanonicalDocument.fromText(raw.optString("content")),
                 properties = raw.optJSONObject("properties") ?: JSONObject(),
                 links = links,
                 createdAt = raw.optString("created_at"),
@@ -249,15 +253,20 @@ data class SyncPullResult(
     val tombstones: List<Tombstone>,
     val assets: List<LumenAsset>,
     val deleted: List<DeletedRecord>,
+    val nextSeq: Long = headSeq,
+    val hasMore: Boolean = false,
 )
 
 data class DeletedRecord(val kind: String, val id: String)
+
+data class SyncReceipt(val opId: String, val objectId: String, val revision: Long, val previousRevision: Long? = null)
 
 data class SyncPushResult(
     val headSeq: Long,
     val applied: List<String>,
     val conflicts: List<SyncConflict>,
     val errors: List<SyncOpError>,
+    val receipts: List<SyncReceipt> = emptyList(),
 )
 
 data class OgPreview(

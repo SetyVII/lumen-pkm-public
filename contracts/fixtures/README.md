@@ -26,3 +26,10 @@ Reglas:
   image with stable IDs. Consumed by Qt editor and Android structured-block tests.
 
 - `toggles.json`: shared expanded/collapsed toggle titles, nested editable bodies and a following sibling. Used by Qt and backend sync tests.
+
+- `document-v2/*.document.json`: canonical direct v2 documents, including empty
+  content and a rich all-node/inline corpus; independent of Qt and Android.
+- `document-commands/*.json`: v2 input/commands/expected or error_contains
+  vectors. Clients and Go use identical semantics and deterministic new_ids.
+  Contract: `../document.schema.json`; details:
+  `../../docs/architecture/document-v2.md`.

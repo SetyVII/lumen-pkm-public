@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"lumen/server/internal/document"
 	"math"
 	"mime"
 	"net/http"
@@ -403,6 +404,17 @@ func collectExportAssetRefs(selection *exportSelection, o Object) {
 			}
 		}
 	}
+	if o.Document != nil {
+		collectBlockAssetRefs(selection, documentMarkdownBlocks(*o.Document))
+		for _, ref := range document.References(*o.Document) {
+			if ref.AssetID != "" {
+				selection.referencedAssets[ref.AssetID] = true
+			}
+			if ref.ObjectID != "" {
+				selection.referencedMedia[ref.ObjectID] = true
+			}
+		}
+	}
 	if raw, ok := o.Properties["blocks"]; ok && raw != nil {
 		if blocks, err := decodeObjectBlocks(raw); err == nil {
 			collectBlockAssetRefs(selection, blocks)
@@ -505,6 +517,12 @@ func (a *App) writeExportObjects(ctx context.Context, zw *zip.Writer, selection 
 			meta := selection.objects[o.ID]
 			if meta == nil {
 				continue
+			}
+			if o.Document != nil {
+				canonicalPath := meta.Folder + "/" + strings.TrimSuffix(meta.Filename, ".md") + ".document.json"
+				if err := writeZipJSON(zw, canonicalPath, o); err != nil {
+					return err
+				}
 			}
 			body := buildExportBody(o, linkCtx)
 			content := buildExportFrontMatter(o)
@@ -710,6 +728,13 @@ func writeZipBytes(zw *zip.Writer, name string, data []byte, method uint16) erro
 // ---------------------------------------------------------------------------
 
 func buildExportBody(o Object, ctx *exportLinkContext) string {
+	if o.Document != nil {
+		blocks := documentMarkdownBlocks(*o.Document)
+		for i := range blocks {
+			rewriteExportBlock(&blocks[i], ctx)
+		}
+		return BlocksToMarkdown(blocks)
+	}
 	if raw, ok := o.Properties["blocks"]; ok && raw != nil {
 		if blocks, err := decodeObjectBlocks(raw); err == nil && len(blocks) > 0 {
 			for i := range blocks {

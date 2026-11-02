@@ -7,8 +7,10 @@ import com.sety.lumen.mobile.data.LumenType
 import com.sety.lumen.mobile.data.SettingsStore
 import com.sety.lumen.mobile.data.SyncConflict
 import com.sety.lumen.mobile.data.SyncOpError
+import com.sety.lumen.mobile.data.decodeSyncPullPage
 import com.sety.lumen.mobile.data.SyncPullResult
 import com.sety.lumen.mobile.data.SyncPushResult
+import com.sety.lumen.mobile.data.SyncReceipt
 import com.sety.lumen.mobile.data.SyncStatus
 import com.sety.lumen.mobile.data.Tombstone
 import okhttp3.MediaType.Companion.toMediaType
@@ -53,29 +55,7 @@ class LumenApi(
                 .post(body.toString().toRequestBody(jsonType))
                 .build()
         )
-        val json = JSONObject(raw)
-        val objects = mutableListOf<LumenObject>()
-        json.optJSONArray("objects")?.forEachObject { objects += LumenObject.fromJson(it) }
-        val types = mutableListOf<LumenType>()
-        json.optJSONArray("types")?.forEachObject { types += LumenType.fromJson(it) }
-        val tombstones = mutableListOf<Tombstone>()
-        json.optJSONArray("tombstones")?.forEachObject {
-            tombstones += Tombstone(it.optString("id"), it.optLong("revision"), it.optString("deleted_at"))
-        }
-        val assets = mutableListOf<LumenAsset>()
-        json.optJSONArray("assets")?.forEachObject { assets += LumenAsset.fromJson(it) }
-        val deleted = mutableListOf<DeletedRecord>()
-        json.optJSONArray("deleted")?.forEachObject {
-            deleted += DeletedRecord(it.optString("kind"), it.optString("id"))
-        }
-        return SyncPullResult(
-            headSeq = json.optLong("head_seq"),
-            objects = objects,
-            types = types,
-            tombstones = tombstones,
-            assets = assets,
-            deleted = deleted,
-        )
+        return decodeSyncPullPage(JSONObject(raw))
     }
 
     fun push(deviceId: String, baseSeq: Long, operations: List<JSONObject>): SyncPushResult {
@@ -102,7 +82,11 @@ class LumenApi(
         json.optJSONArray("errors")?.forEachObject {
             errors += SyncOpError(it.optString("op_id"), it.optString("error"))
         }
-        return SyncPushResult(json.optLong("head_seq"), applied, conflicts, errors)
+        val receipts = mutableListOf<SyncReceipt>()
+        json.optJSONArray("receipts")?.forEachObject {
+            receipts += SyncReceipt(it.optString("op_id"), it.optString("object_id"), it.optLong("revision"), if(it.has("previous_revision")&&!it.isNull("previous_revision")) it.getLong("previous_revision") else null)
+        }
+        return SyncPushResult(json.optLong("head_seq"), applied, conflicts, errors, receipts)
     }
 
     /** Tipos registrados en el servidor. Los personalizados del teléfono que
@@ -130,7 +114,7 @@ class LumenApi(
             .header("Authorization", "Bearer $token")
             .get()
             .build()
-        client.newCall(request).execute().use { response ->
+        client.newCall(request.newBuilder().header("X-Lumen-Document-Version", "2").build()).execute().use { response ->
             if (!response.isSuccessful) throw ApiException(response.code, "No se pudo descargar el adjunto (${response.code})")
             val body = response.body ?: throw ApiException(0, "Respuesta vacía")
             destination.parentFile?.mkdirs()
@@ -145,6 +129,7 @@ class LumenApi(
         val authorized = request.newBuilder()
             .header("Authorization", "Bearer $token")
             .header("Accept", "application/json")
+            .header("X-Lumen-Document-Version", "2")
             .header("Cache-Control", "no-store")
             .build()
         client.newCall(authorized).execute().use { response ->

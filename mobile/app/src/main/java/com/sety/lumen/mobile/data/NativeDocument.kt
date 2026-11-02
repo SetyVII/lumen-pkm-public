@@ -57,10 +57,7 @@ fun nativeDocumentText(blocks: JSONArray): String = (0 until blocks.length()).jo
     nativeBlockText(blocks.getJSONObject(it))
 }
 
-fun editorDocumentText(source: LumenObject?): String {
-    val blocks = source?.properties?.optJSONArray("blocks")
-    return if (blocks != null && blocks.length() > 0) nativeDocumentText(blocks) else source?.content.orEmpty()
-}
+fun editorDocumentText(source: LumenObject?): String = source?.document?.plainText().orEmpty()
 
 fun nativeBlockSpans(blocks: JSONArray): List<NativeBlockSpan> {
     var offset = 0

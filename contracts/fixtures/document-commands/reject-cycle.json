@@ -1,0 +1,47 @@
+{
+  "input": {
+    "schema_version": 2,
+    "blocks": [
+      {
+        "id": "a",
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "Uno"
+          }
+        ],
+        "children": [
+          {
+            "id": "child",
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Hijo"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "b",
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "Dos"
+          }
+        ]
+      }
+    ]
+  },
+  "commands": [
+    {
+      "type": "move",
+      "node_id": "a",
+      "parent_id": "child"
+    }
+  ],
+  "error_contains": "selected subtree"
+}

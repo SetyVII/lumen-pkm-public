@@ -18,9 +18,13 @@ func TestScenarioMarkdownRoundTripJourney(t *testing.T) {
 		"```go\nfmt.Println(\"hi\")\n```\n\n" +
 		"$$\nx^2\n$$\n"
 	blocks := scenarioMarkdownBlocks(t, app, markdown)
+	d, e := canonicalDocumentFromBlocks(blocks)
+	if e != nil {
+		t.Fatal(e)
+	}
 	note := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
 		"type_id": "note", "title": "Field notes", "content": markdown,
-		"properties": map[string]any{"blocks": blocks},
+		"document": d,
 	}))
 	if len(scenarioObjectBlocks(t, note)) != len(blocks) {
 		t.Fatal("create did not store the converted block tree")
@@ -30,10 +34,7 @@ func TestScenarioMarkdownRoundTripJourney(t *testing.T) {
 	appended := "## Later\n\n- [ ] follow up\n\nMore text with $a+b$.\n"
 	moreBlocks := scenarioMarkdownBlocks(t, app, appended)
 	allBlocks := append(append([]Block{}, blocks...), moreBlocks...)
-	note = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+note.ID, map[string]any{
-		"content":    markdown + "\n" + appended,
-		"properties": map[string]any{"blocks": allBlocks},
-	}))
+	note = objectFrom(t, apiDocumentAppend(t, app, "POST", "/v1/objects/"+note.ID+"/append-markdown", map[string]any{"markdown": appended}))
 	if len(scenarioObjectBlocks(t, note)) != len(allBlocks) {
 		t.Fatal("append did not store the combined block tree")
 	}

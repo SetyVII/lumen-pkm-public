@@ -69,21 +69,16 @@ class EditorDocumentTest {
     }
 
     @Test
-    fun mobileSaveWritesDesktopCompatibleReferencesAndDividers() {
-        val text = "Antes\n${objectMentionText(task)}\n---\nDespués"
-        val edited = source.withPlainContent(text, listOf(task))
-        val blocks = edited.properties.getJSONArray("blocks")
-        assertEquals("divider", blocks.getJSONObject(2).getString("type"))
-        assertEquals("\uFFFC", blocks.getJSONObject(2).getString("text"))
-        val run = blocks.getJSONObject(1).getJSONArray("runs").getJSONObject(0)
-        assertEquals(task.id, run.getString("object_id"))
-        assertEquals("lumen://object/${task.id}", run.getString("href"))
-        assertEquals(task.title, run.getString("text"))
-        assertTrue(task.id in edited.links)
-        assertTrue(edited.properties.isNull("rich_text"))
-        val changed = edited.withPlainContent(edited.content + "!", listOf(task))
-        val nextBlocks = changed.properties.getJSONArray("blocks")
-        for (i in 0 until blocks.length()) assertEquals(blocks.getJSONObject(i).getString("id"), nextBlocks.getJSONObject(i).getString("id"))
-        assertEquals("Antes\n${task.title}\n---\nDespués", edited.content)
+    fun mobileSaveWritesCanonicalReferencesAndDividers() {
+        val blocks = JSONArray().put(documentParagraph("Antes"))
+            .put(documentParagraph().put("content", JSONArray().put(JSONObject().put("type", "object_ref").put("object_id", task.id).put("label", task.title))))
+            .put(documentNode("divider")).put(documentParagraph("Después"))
+        val edited = source.withDocument(CanonicalDocument.empty().withBlocks(blocks))
+        val received = LumenObject.fromJson(edited.toJson())
+        assertEquals("divider", received.document.blocks().getJSONObject(2).getString("type"))
+        assertTrue(task.id in received.document.references())
+        assertEquals(blocks.toString(), received.document.blocks().toString())
+        assertFalse(received.properties.has("rich_text"))
+        assertFalse(received.properties.has("blocks"))
     }
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"lumen/server/internal/document"
 	"os"
 	"reflect"
 	"testing"
@@ -10,151 +11,149 @@ import (
 func formattedFixture(t *testing.T, app *App) Object {
 	t.Helper()
 	return objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "note", "title": "Formatted fixture", "content": "Old content",
-		"properties": map[string]any{"blocks": []any{map[string]any{"id": "stable-block", "text": "Old content"}}, "rich_text": "<p>Old content</p>", "custom": "remove deliberately", "date": "2098-11-16"},
+		"type_id": "note", "title": "Formatted fixture", "document": documentFixture("Old content"),
+		"properties": map[string]any{"custom": "remove deliberately", "date": "2098-11-16"},
 	}))
 }
 
-func TestPlainContentPatchInvalidatesOnlyImplicitRichFormats(t *testing.T) {
-	for _, variant := range []struct {
-		name       string
-		properties any
-		expected   map[string]bool
-	}{
-		{"no properties", nil, map[string]bool{"blocks": false, "rich_text": false, "custom": true, "date": true}},
-		{"date only", map[string]any{"date": "2098-11-17"}, map[string]bool{"blocks": false, "rich_text": false, "custom": false, "date": true}},
-		{"explicit HTML", map[string]any{"rich_text": "<p>New content</p>"}, map[string]bool{"blocks": false, "rich_text": true, "custom": false, "date": false}},
-		{"explicit both", map[string]any{"blocks": []any{map[string]any{"id": "stable-block", "text": "New content"}}, "rich_text": "<p>New content</p>"}, map[string]bool{"blocks": true, "rich_text": true, "custom": false, "date": false}},
-	} {
-		t.Run(variant.name, func(t *testing.T) {
-			app, _, _ := makeApp(t)
-			before := formattedFixture(t, app)
-			patch := map[string]any{"content": "New content"}
-			if variant.properties != nil {
-				patch["properties"] = variant.properties
-			}
-			objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+before.ID, patch))
-			got := objectFrom(t, api(t, app, "GET", "/v1/objects/"+before.ID, nil))
-			if got.Content != "New content" {
-				t.Fatal("plain text did not persist")
-			}
-			for key, expected := range variant.expected {
-				if _, present := got.Properties[key]; present != expected {
-					t.Fatalf("%s presence=%v, expected %v", key, present, expected)
-				}
-			}
-		})
+func TestPlainContentPatchCannotInvalidateCanonicalFormats(t *testing.T) {
+	for _, properties := range []any{nil, map[string]any{"date": "2098-11-17"}, map[string]any{"rich_text": "<p>New content</p>"}, map[string]any{"blocks": []any{}, "rich_text": "<p>New content</p>"}} {
+		app, _, _ := makeApp(t)
+		before := formattedFixture(t, app)
+		patch := map[string]any{"content": "New content", "base_revision": before.Revision, "op_id": newID()}
+		if properties != nil {
+			patch["properties"] = properties
+		}
+		rr := api(t, app, "PATCH", "/v1/objects/"+before.ID, patch)
+		if rr.Code != 400 {
+			t.Fatalf("text projection was allowed to replace canonical data: %d %s", rr.Code, rr.Body.String())
+		}
+		got := objectFrom(t, api(t, app, "GET", "/v1/objects/"+before.ID, nil))
+		if got.Revision != before.Revision || !reflect.DeepEqual(got.Document, before.Document) || !reflect.DeepEqual(got.Properties, before.Properties) {
+			t.Fatal("rejected legacy edit mutated document or metadata")
+		}
 	}
 }
 
-func TestPropertiesReplacementRemovesOmittedEditableKeysWithoutChangingContent(t *testing.T) {
+func TestPropertiesReplacementRemovesOmittedEditableKeysWithoutChangingDocument(t *testing.T) {
 	app, _, _ := makeApp(t)
 	before := formattedFixture(t, app)
 	got := objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+before.ID, map[string]any{"properties": map[string]any{"date": "2098-11-18"}}))
-	if len(got.Properties) != 1 || got.Properties["date"] != "2098-11-18" || got.Content != before.Content {
-		t.Fatal("properties replacement retained omitted fields or changed text")
+	if len(got.Properties) != 1 || got.Properties["date"] != "2098-11-18" || !reflect.DeepEqual(got.Document, before.Document) {
+		t.Fatal("metadata replacement retained omitted fields or changed rich document")
 	}
-	// A relation/title-only update has no authority to discard current formats.
-	got = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+before.ID, map[string]any{"properties": before.Properties}))
 	got = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+before.ID, map[string]any{"title": "Renamed formatted fixture"}))
-	if got.Properties["blocks"] == nil || got.Properties["rich_text"] == nil {
-		t.Fatal("unrelated patch invalidated current formatting")
+	if !reflect.DeepEqual(got.Document, before.Document) {
+		t.Fatal("title-only patch discarded rich marks")
 	}
 }
 
-func TestMobilePlainContentCanExplicitlyInvalidateNativeFormats(t *testing.T) {
+func TestMobileCanonicalDocumentControlsTextProjection(t *testing.T) {
 	app, _, _ := makeApp(t)
 	before := formattedFixture(t, app)
 	incoming := before
-	incoming.Content += "\nTest desde el movil"
-	incoming.Properties = map[string]any{"blocks": nil, "rich_text": nil, "date": "2098-11-16"}
-	result := decodeBody[syncPushResponse](t, api(t, app, "POST", "/v1/sync/push", map[string]any{
-		"device_id": "plain-text-test", "operations": []any{map[string]any{
-			"op_id": "plain-text-edit", "action": "put", "base_revision": before.Revision, "object": incoming,
-		}},
-	}))
+	next := documentFixture("Old content\nTest desde el movil")
+	incoming.Document = &next
+	incoming.Content = "A projection from a buggy client cannot win"
+	incoming.Properties = map[string]any{"date": "2098-11-16"}
+	result := decodeBody[syncPushResponse](t, api(t, app, "POST", "/v1/sync/push", map[string]any{"device_id": "canonical-text-test", "operations": []any{map[string]any{"op_id": "canonical-text-edit", "action": "put", "base_revision": before.Revision, "object": incoming}}}))
 	if len(result.Errors) != 0 || len(result.Applied) != 1 {
-		t.Fatalf("mobile edit rejected: %+v", result)
+		t.Fatalf("canonical mobile edit rejected: %+v", result)
 	}
 	got := objectFrom(t, api(t, app, "GET", "/v1/objects/"+before.ID, nil))
-	if got.Content != incoming.Content || got.Properties["blocks"] != nil || got.Properties["rich_text"] != nil {
-		t.Fatal("mobile text is hidden by stale native formats")
-	}
-	if got.Properties["date"] != "2098-11-16" {
-		t.Fatal("unrelated properties lost")
+	if got.Content != "Old content\nTest desde el movil" || !reflect.DeepEqual(got.Document, &next) || got.Properties["date"] != "2098-11-16" {
+		t.Fatal("canonical source, marks or unrelated properties lost")
 	}
 }
 
-func TestMobileNativeEditorBlocksRoundTripWithoutLosingFormatting(t *testing.T) {
+func TestMobileCanonicalEditorAllTypesRoundTripWithoutLosingFormatting(t *testing.T) {
 	app, _, _ := makeApp(t)
-	data, err := os.ReadFile("../contracts/fixtures/native-editor.json")
+	data, err := os.ReadFile("../contracts/fixtures/document-v2/rich.document.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var fixture struct {
-		Objects []Object `json:"objects"`
-	}
-	if err := json.Unmarshal(data, &fixture); err != nil {
+	var rich document.Document
+	if err = json.Unmarshal(data, &rich); err != nil {
 		t.Fatal(err)
 	}
-	operations := make([]any, 0, len(fixture.Objects))
-	for _, object := range fixture.Objects {
-		operations = append(operations, map[string]any{"op_id": "native-" + object.ID, "action": "put", "object": object})
+	// Instantiate the shared contract vector in a real library: media must be
+	// uploaded, and semantic references must name actual target objects/blocks.
+	target := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Reference target", "document": documentFixture("Referenced paragraph")}))
+	asset := uploadFixture(t, app, "", "fixture.png", []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0})
+	var bind func([]document.Node)
+	bind = func(nodes []document.Node) {
+		for i := range nodes {
+			node := &nodes[i]
+			if node.Type == "image" {
+				node.Attrs["asset_id"] = asset.ID
+				node.Attrs["object_id"] = asset.MediaObjectID
+			}
+			if node.Type == "object_embed" {
+				node.Attrs["object_id"] = target.ID
+				if _, ok := node.Attrs["block_id"]; ok {
+					node.Attrs["block_id"] = "paragraph-1"
+				}
+			}
+			for j := range node.Content {
+				item := &node.Content[j]
+				if item.Type == "object_ref" || item.Type == "block_ref" {
+					item.ObjectID = target.ID
+					if item.Type == "block_ref" {
+						item.BlockID = "paragraph-1"
+					}
+				}
+			}
+			bind(node.Children)
+		}
 	}
-	result := decodeBody[syncPushResponse](t, api(t, app, "POST", "/v1/sync/push", map[string]any{
-		"device_id": "native-editor-test", "operations": operations,
-	}))
-	if len(result.Errors) != 0 || len(result.Applied) != len(operations) {
-		t.Fatalf("native blocks rejected: %+v", result)
+	bind(rich.Blocks)
+	obj := Object{ID: "native-all-types", TypeID: "note", Title: "All canonical types", Document: &rich, Properties: map[string]any{}, Links: []string{}, CreatedAt: now(), UpdatedAt: now()}
+	result := decodeBody[syncPushResponse](t, api(t, app, "POST", "/v1/sync/push", map[string]any{"device_id": "native-editor-test", "operations": []any{map[string]any{"op_id": "native-all-types-put", "action": "put", "object": obj}}}))
+	if len(result.Errors) != 0 || len(result.Applied) != 1 {
+		t.Fatalf("canonical tree rejected: %+v", result)
 	}
-	want := fixture.Objects[len(fixture.Objects)-1]
-	got := objectFrom(t, api(t, app, "GET", "/v1/objects/"+want.ID, nil))
-	if got.Content != want.Content || !reflect.DeepEqual(got.Properties["blocks"], want.Properties["blocks"]) {
-		t.Fatal("native sync altered the body, list/style metadata or image positions")
+	got := objectFrom(t, api(t, app, "GET", "/v1/objects/"+obj.ID, nil))
+	if !reflect.DeepEqual(got.Document, &rich) || got.Content != document.PlainText(rich) {
+		t.Fatal("sync changed canonical type, marks, image dimensions, temporal value or reference")
+	}
+	if len(got.Links) != 0 || !scenarioContainsID(got.DocumentLinks, target.ID) || !scenarioContainsID(got.DocumentLinks, asset.MediaObjectID) {
+		t.Fatal("document references were lost or silently promoted to manual links")
 	}
 }
 
-func TestMobileJournalAppendKeepsNativeImagesAndIdempotency(t *testing.T) {
+func TestMobileJournalAppendKeepsCanonicalImagesAndIdempotency(t *testing.T) {
 	app, _, _ := makeApp(t)
-	journal := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{
-		"type_id": "journal", "title": "Native journal append", "content": "Original",
-		"properties": map[string]any{"date": "2098-12-01", "blocks": []any{map[string]any{"id": "original", "type": "paragraph", "text": "Original", "custom": "keep", "runs": []any{map[string]any{"text": "Original", "bold": true}}}}, "rich_text": "<p>Original</p>"},
-	}))
+	initial := documentFixture("Original")
+	initial.Blocks[0].Attrs = map[string]any{"custom": "keep"}
+	journal := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "journal", "title": "Native journal append", "document": initial, "properties": map[string]any{"date": "2098-12-01"}}))
 	for n, id := range []string{"native-image-a", "native-image-b"} {
-		image := map[string]any{"id": id, "type": "embed", "text": "\uFFFC", "runs": []any{map[string]any{"type": "image", "text": "\uFFFC", "image_name": "lumen://image/" + id, "width": 400, "height": 100}}}
+		uploaded := uploadFixture(t, app, "", id+".png", []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0})
+		image := document.Node{ID: id, Type: "image", Attrs: map[string]any{"asset_id": uploaded.ID, "object_id": uploaded.MediaObjectID, "width": float64(400), "height": float64(100), "alignment": "center", "caption": "Atomic image"}}
 		delta := journal
-		delta.Content = "\uFFFC"
-		delta.Properties = map[string]any{"blocks": []any{image}}
-		op := map[string]any{"op_id": id + "-operation", "action": "put", "append": true, "client_time": "2098-12-01T10:30:00Z", "object": delta}
+		addition := document.Document{SchemaVersion: 2, Blocks: []document.Node{image}}
+		delta.Document = &addition
+		delta.Content = ""
+		op := map[string]any{"op_id": id + "-operation", "action": "put", "append": true, "base_revision": journal.Revision, "object": delta}
 		for retry := 0; retry < 2; retry++ {
 			result := decodeBody[syncPushResponse](t, api(t, app, "POST", "/v1/sync/push", map[string]any{"device_id": "native-append-test", "operations": []any{op}}))
-			if len(result.Errors) != 0 {
-				t.Fatalf("native append rejected: %+v", result)
+			if len(result.Errors) != 0 || len(result.Applied) != 1 {
+				t.Fatalf("canonical append rejected: %+v", result)
 			}
 		}
 		got := objectFrom(t, api(t, app, "GET", "/v1/objects/"+journal.ID, nil))
-		blocks := got.Properties["blocks"].([]any)
-		if len(blocks) != 1+(n+1)*3 {
-			t.Fatalf("missing or duplicated blocks: %d", len(blocks))
+		if len(got.Document.Blocks) != n+2 {
+			t.Fatalf("missing or duplicated blocks: %+v", got.Document)
 		}
-		if !reflect.DeepEqual(blocks[0], journal.Properties["blocks"].([]any)[0]) {
+		if !reflect.DeepEqual(got.Document.Blocks[0], journal.Document.Blocks[0]) {
 			t.Fatal("existing rich block changed")
 		}
-		if !reflect.DeepEqual(blocks[len(blocks)-1], image) {
-			// JSON number types differ from the local integer fixture.
-			a, _ := json.Marshal(blocks[len(blocks)-1])
-			b, _ := json.Marshal(image)
-			if string(a) != string(b) {
-				t.Fatalf("image metadata changed: %s vs %s", a, b)
-			}
-		}
-		if got.Properties["rich_text"] != nil {
-			t.Fatal("stale HTML survived append")
+		if !reflect.DeepEqual(got.Document.Blocks[len(got.Document.Blocks)-1], image) {
+			t.Fatal("image metadata changed")
 		}
 	}
 }
 
-func TestMobileObjectSchemasKeepLegacyAndTypedRelationsSeparate(t *testing.T) {
+func TestMobileObjectSchemasKeepTextAndTypedRelationsSeparate(t *testing.T) {
 	app, _, _ := makeApp(t)
 	data, err := os.ReadFile("../contracts/fixtures/mobile-object-schemas.json")
 	if err != nil {
@@ -164,30 +163,32 @@ func TestMobileObjectSchemasKeepLegacyAndTypedRelationsSeparate(t *testing.T) {
 		Types   []ObjectType `json:"types"`
 		Objects []Object     `json:"objects"`
 	}
-	if err := json.Unmarshal(data, &fixture); err != nil {
+	if err = json.Unmarshal(data, &fixture); err != nil {
 		t.Fatal(err)
 	}
 	for _, typ := range fixture.Types {
 		rr := api(t, app, "POST", "/v1/types", typ)
 		if rr.Code != 201 && rr.Code != 200 {
-			t.Fatalf("schema rejected: %d %s", rr.Code, rr.Body.String())
+			t.Fatalf("schema rejected: %s", rr.Body.String())
 		}
 	}
 	var operations []any
 	for _, obj := range fixture.Objects {
+		doc := documentFixture(obj.Content)
+		obj.Document = &doc
 		operations = append(operations, map[string]any{"op_id": "schema-test-" + obj.ID, "action": "put", "object": obj})
 	}
 	result := decodeBody[syncPushResponse](t, api(t, app, "POST", "/v1/sync/push", map[string]any{"device_id": "schema-client", "operations": operations}))
 	if len(result.Errors) > 0 {
-		t.Fatalf("object schema sync failed: %+v", result)
+		t.Fatalf("schema sync failed: %+v", result)
 	}
 	legacy := objectFrom(t, api(t, app, "GET", "/v1/objects/fixture-book-legacy", nil))
 	modern := objectFrom(t, api(t, app, "GET", "/v1/objects/fixture-book-modern-object", nil))
 	if legacy.Properties["author"] != "Nombre de autor" || len(legacy.PropertyLinks) != 0 {
-		t.Fatal("legacy text became a guessed relation")
+		t.Fatal("text author became guessed relation")
 	}
 	if len(modern.PropertyLinks) != 1 || modern.PropertyLinks[0] != "fixture-author" {
-		t.Fatalf("typed author relation lost: %v", modern.PropertyLinks)
+		t.Fatal("typed relation lost")
 	}
 	if !reflect.DeepEqual(modern.Properties["reading_line"], fixture.Objects[2].Properties["reading_line"]) {
 		t.Fatal("reading interval changed")

@@ -111,18 +111,6 @@ func (a *App) validateCollectionItem(itemTypeID, id string) error {
 	return nil
 }
 
-// validateCollection is called from validateObject for every write path:
-// create, PATCH, capture and mobile sync. It owns the collection invariants:
-//
-//   - item_type_id references an existing type and never changes afterwards;
-//   - a collection cannot hold another collection (Capacities recommends
-//     queries or a new object type instead of nested collections);
-//   - every item exists, is not trashed, matches item_type_id and appears once;
-//   - items is always stored as an array, preserving its order.
-//
-// Re-validating the whole list on each write costs one decrypted read per item.
-// Curated lists are small and this keeps every mutation path (including sync
-// push) from silently bypassing the invariant.
 func (a *App) validateCollection(o *Object) error {
 	itemTypeID := collectionItemType(o)
 	if itemTypeID == "" {

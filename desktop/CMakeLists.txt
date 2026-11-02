@@ -5,11 +5,21 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network Svg Test Pdf PdfWidgets)
 
 set(LUMEN_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-set(LUMEN_MODULES
+set(LUMEN_EDITOR_SOURCES
+  ${LUMEN_SRC}/editor/lumen_document.cpp
+  ${LUMEN_SRC}/editor/lumen_document_commands.cpp
+  ${LUMEN_SRC}/editor/lumen_clipboard.cpp
+  ${LUMEN_SRC}/editor/lumen_editor_clipboard.cpp
   ${LUMEN_SRC}/editor/lumen_editor.cpp
-  ${LUMEN_SRC}/editor/lumen_media.cpp
+  ${LUMEN_SRC}/editor/lumen_temporal.cpp
+  ${LUMEN_SRC}/editor/lumen_image_block.cpp
+  ${LUMEN_SRC}/editor/lumen_block_references.cpp
+  ${LUMEN_SRC}/editor/lumen_table_controls.cpp
   ${LUMEN_SRC}/editor/lumen_syntax.cpp
-  ${LUMEN_SRC}/editor/lumen_math.cpp
+  ${LUMEN_SRC}/editor/lumen_math.cpp)
+set(LUMEN_MODULES
+  ${LUMEN_EDITOR_SOURCES}
+  ${LUMEN_SRC}/editor/lumen_media.cpp
   ${LUMEN_SRC}/objects/lumen_properties.cpp
   ${LUMEN_SRC}/objects/lumen_tasks.cpp
   ${LUMEN_SRC}/views/lumen_views.cpp
@@ -87,23 +97,21 @@ if(LUMEN_BUILD_TESTS)
     ${LUMEN_SRC}/views/lumen_calculations.cpp ${LUMEN_SRC}/views/lumen_views.cpp)
   qt_add_executable(lumen-calendar tests/calendar.cpp ${LUMEN_SRC}/views/lumen_calendar.cpp ${LUMEN_SRC}/views/lumen_views.cpp ${LUMEN_SRC}/views/lumen_calculations.cpp)
   qt_add_executable(lumen-properties tests/properties.cpp ${LUMEN_SRC}/objects/lumen_properties.cpp)
-  qt_add_executable(lumen-editor-media tests/editor_media_test.cpp
-    ${LUMEN_SRC}/editor/lumen_editor.cpp ${LUMEN_SRC}/editor/lumen_media.cpp
-    ${LUMEN_SRC}/editor/lumen_syntax.cpp ${LUMEN_SRC}/editor/lumen_math.cpp)
+  qt_add_executable(lumen-editor-media tests/editor_media_test.cpp ${LUMEN_EDITOR_SOURCES} ${LUMEN_SRC}/editor/lumen_media.cpp)
   qt_add_executable(lumen-graph tests/graph.cpp ${LUMEN_SRC}/views/lumen_graph.cpp)
-  qt_add_executable(lumen-code-math tests/code_math.cpp
-    ${LUMEN_SRC}/editor/lumen_editor.cpp ${LUMEN_SRC}/editor/lumen_syntax.cpp
-    ${LUMEN_SRC}/editor/lumen_math.cpp)
+  qt_add_executable(lumen-code-math tests/code_math.cpp ${LUMEN_EDITOR_SOURCES})
   qt_add_executable(lumen-tasks tests/tasks_test.cpp ${LUMEN_SRC}/objects/lumen_tasks.cpp)
-  qt_add_executable(lumen-editor-blocks tests/editor_blocks_test.cpp
-    ${LUMEN_SRC}/editor/lumen_editor.cpp ${LUMEN_SRC}/editor/lumen_media.cpp
-    ${LUMEN_SRC}/editor/lumen_syntax.cpp ${LUMEN_SRC}/editor/lumen_math.cpp)
+  qt_add_executable(lumen-document tests/document_test.cpp ${LUMEN_EDITOR_SOURCES})
+  qt_add_executable(lumen-editor-blocks tests/editor_blocks_test.cpp ${LUMEN_EDITOR_SOURCES} ${LUMEN_SRC}/editor/lumen_media.cpp)
 
-  foreach(test views collections sync find-replace dashboards templates aliases calculations calendar properties editor-media graph code-math tasks editor-blocks)
+  qt_add_executable(lumen-api-protocol tests/api_protocol_test.cpp)
+  qt_add_executable(lumen-table-controls tests/table_controls_test.cpp ${LUMEN_EDITOR_SOURCES})
+
+  foreach(test api-protocol table-controls document views collections sync find-replace dashboards templates aliases calculations calendar properties editor-media graph code-math tasks editor-blocks)
     lumen_target(lumen-${test})
     target_link_libraries(lumen-${test} PRIVATE Qt6::Test)
     add_test(NAME ${test} COMMAND lumen-${test})
   endforeach()
-  set_tests_properties(views collections sync find-replace dashboards templates aliases calculations calendar properties editor-media graph code-math tasks editor-blocks
+  set_tests_properties(api-protocol table-controls document views collections sync find-replace dashboards templates aliases calculations calendar properties editor-media graph code-math tasks editor-blocks
     PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()

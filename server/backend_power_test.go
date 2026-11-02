@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"lumen/server/internal/document"
 	"net/url"
 	"os"
 	"strings"
@@ -110,20 +111,21 @@ func TestBlockReferencesEditDeleteRestoreAndNestedJourney(t *testing.T) {
 	source := objectFrom(t, api(t, app, "POST", "/v1/objects/markdown", map[string]any{"type_id": "note", "title": "Source blocks", "markdown": "Original source\n\nSecond paragraph"}))
 	list := rawObjectBlocks(source)
 	id := list[0].(map[string]any)["id"].(string)
-	reference := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Embedded source", "properties": map[string]any{"blocks": []any{map[string]any{"id": "embed-one", "type": "embed", "text": "Source", "runs": []any{map[string]any{"text": "Source", "href": blockHrefPrefix + id}}}}}}))
+	reference := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Embedded source", "document": document.Document{SchemaVersion: 2, Blocks: []document.Node{{ID: "embed-one", Type: "object_embed", Attrs: map[string]any{"object_id": source.ID, "block_id": id, "view": "embed"}}}}}))
 	refs := api(t, app, "GET", "/v1/blocks/"+id+"/references", nil)
 	if refs.Code != 200 || !strings.Contains(refs.Body.String(), `"count":1`) || !strings.Contains(refs.Body.String(), reference.ID) {
 		t.Fatal(refs.Body.String())
 	}
-	body := map[string]any{"base_revision": source.Revision, "block": map[string]any{"type": "paragraph", "text": "Updated source"}}
+	body := map[string]any{"base_revision": source.Revision, "op_id": "reference-block-edit-001", "block": document.Node{ID: id, Type: "paragraph", Content: []document.Inline{{Type: "text", Text: "Updated source"}}}}
 	edited := api(t, app, "PATCH", "/v1/objects/"+source.ID+"/blocks/"+id, body)
 	if edited.Code != 200 {
 		t.Fatal(edited.Body.String())
 	}
 	live := decodeBody[blockHit](t, api(t, app, "GET", "/v1/blocks/"+id, nil))
-	if live.Block["text"] != "Updated source" || live.Block["id"] != id {
+	if !strings.Contains(blockSearchText(live.Block), "Updated source") || live.Block["id"] != id {
 		t.Fatal("reference did not follow source edit")
 	}
+	body["op_id"] = "reference-block-stale-002"
 	if rr := api(t, app, "PATCH", "/v1/objects/"+source.ID+"/blocks/"+id, body); rr.Code != 409 {
 		t.Fatal("stale block overwrite accepted")
 	}
@@ -146,22 +148,22 @@ func TestBlockReferencesEditDeleteRestoreAndNestedJourney(t *testing.T) {
 		t.Fatal("restored block does not resolve")
 	}
 	source = objectFrom(t, api(t, app, "GET", "/v1/objects/"+source.ID, nil))
-	nested := map[string]any{"type": "group", "text": "Group", "children": []any{map[string]any{"type": "paragraph", "text": "Nested sentinel"}}}
-	added := api(t, app, "POST", "/v1/objects/"+source.ID+"/blocks", map[string]any{"base_revision": source.Revision, "block": nested})
-	if added.Code != 201 {
+	nested := document.Node{ID: "group-extra", Type: "group", Children: []document.Node{{ID: "nested-extra", Type: "paragraph", Content: []document.Inline{{Type: "text", Text: "Nested sentinel"}}}}}
+	added := api(t, app, "POST", "/v1/objects/"+source.ID+"/blocks", map[string]any{"base_revision": source.Revision, "op_id": "reference-nested-insert-003", "block": nested})
+	if added.Code != 200 {
 		t.Fatal(added.Body.String())
 	}
 	source = objectFrom(t, api(t, app, "GET", "/v1/objects/"+source.ID, nil))
 	var nestedID string
 	walkBlocks(rawObjectBlocks(source), 0, func(b map[string]any) {
-		if b["text"] == "Nested sentinel" {
+		if strings.Contains(blockSearchText(b), "Nested sentinel") {
 			nestedID, _ = b["id"].(string)
 		}
 	})
 	if nestedID == "" || !strings.Contains(source.Content, "Nested sentinel") {
 		t.Fatal("nested block lost")
 	}
-	deleted := api(t, app, "DELETE", "/v1/objects/"+source.ID+"/blocks/"+nestedID, map[string]any{"base_revision": source.Revision})
+	deleted := api(t, app, "DELETE", "/v1/objects/"+source.ID+"/blocks/"+nestedID, map[string]any{"base_revision": source.Revision, "op_id": "reference-nested-delete-004"})
 	if deleted.Code != 200 {
 		t.Fatal(deleted.Body.String())
 	}
@@ -278,27 +280,18 @@ func TestHabitSyncExportRestoreJourney(t *testing.T) {
 
 func TestBlockEditsProtectUnrepresentedBodyAndClearText(t *testing.T) {
 	app, _, _ := makeApp(t)
-	source := objectFrom(t, api(t, app, "POST", "/v1/objects/markdown", map[string]any{"type_id": "note", "title": "Protected block body", "markdown": "Visible block"}))
-	id := rawObjectBlocks(source)[0].(map[string]any)["id"].(string)
-	// Preserve a deliberately mixed legacy body for the regression.
-	source.Content = "Visible block\nOlder text missing from blocks"
-	source = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+source.ID, map[string]any{"content": source.Content, "properties": source.Properties}))
-	rr := api(t, app, "PATCH", "/v1/objects/"+source.ID+"/blocks/"+id, map[string]any{"base_revision": source.Revision, "block": map[string]any{"type": "paragraph", "text": "Replacement"}})
-	if rr.Code != 409 {
-		t.Fatal("block edit erased unrepresented legacy text")
-	}
-	intact := objectFrom(t, api(t, app, "GET", "/v1/objects/"+source.ID, nil))
-	if intact.Content != source.Content {
-		t.Fatal("rejected edit changed body")
-	}
-	source = objectFrom(t, api(t, app, "PATCH", "/v1/objects/"+source.ID, map[string]any{"content": "Visible block", "properties": source.Properties}))
-	rr = api(t, app, "PATCH", "/v1/objects/"+source.ID+"/blocks/"+id, map[string]any{"base_revision": source.Revision, "block": map[string]any{"type": "paragraph", "text": ""}})
+	source := objectFrom(t, api(t, app, "POST", "/v1/objects", map[string]any{"type_id": "note", "title": "Canonical clear", "document": canonicalTestDoc()}))
+	before := source.Document.Blocks[0]
+	rr := api(t, app, "PATCH", "/v1/objects/"+source.ID+"/blocks/writer-text", map[string]any{"base_revision": source.Revision, "op_id": "clear-canonical-node-001", "block": document.Node{ID: "writer-text", Type: "paragraph"}})
 	if rr.Code != 200 {
 		t.Fatal(rr.Body.String())
 	}
-	hit := decodeBody[blockHit](t, api(t, app, "GET", "/v1/blocks/"+id, nil))
-	if hit.Block["text"] != "" {
-		t.Fatal("could not clear block without changing ID")
+	source = objectFrom(t, api(t, app, "GET", "/v1/objects/"+source.ID, nil))
+	if source.Content != "" || source.Document.Blocks[0].ID != before.ID || source.Document.Blocks[0].Children[0].ID != "writer-text" {
+		t.Fatal("clear damaged structure or identity")
+	}
+	if source.Properties["blocks"] != nil || source.Properties["rich_text"] != nil {
+		t.Fatal("obsolete formats persisted")
 	}
 }
 
@@ -331,7 +324,7 @@ func TestBlockSearchFindsTableCellsAndNestedColumns(t *testing.T) {
 	app, _, _ := makeApp(t)
 	source := objectFrom(t, api(t, app, "POST", "/v1/objects/markdown", map[string]any{"type_id": "note", "title": "Search table", "markdown": "| Header |\n| --- |\n| TableNeedle |"}))
 	result := api(t, app, "GET", "/v1/blocks?q=TableNeedle&object_id="+source.ID, nil)
-	if result.Code != 200 || !strings.Contains(result.Body.String(), `"type":"table"`) {
+	if result.Code != 200 || !strings.Contains(result.Body.String(), `"text":"TableNeedle"`) {
 		t.Fatal("table cell not searchable: " + result.Body.String())
 	}
 	nested := []any{map[string]any{"id": "column-parent", "type": "columns", "columns": []any{[]any{map[string]any{"id": "nested-column", "type": "paragraph", "text": "ColumnNeedle", "runs": []any{map[string]any{"text": "ColumnNeedle"}}}}}}}

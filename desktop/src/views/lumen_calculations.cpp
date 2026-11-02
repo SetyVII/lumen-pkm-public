@@ -111,9 +111,6 @@ QList<QPair<QString, QString>> opsForKind(const QString &kind) {
     if (kind == "boolean")
         return {{"checked_count", "Checked count"}, {"checked_percent", "Checked percent"},
                 {"count_filled", "Count filled"}, {"count_empty", "Count empty"}};
-    // Every other property kind (text, url, select, tags, relation, title,
-    // system fields...) can only be counted — exactly Capacities' "other
-    // properties can be counted, including how many are empty".
     return counts;
 }
 
