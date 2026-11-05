@@ -1,5 +1,8 @@
 # Building Lumen
 
+For branch, review and cross-app contribution workflow, see
+[CONTRIBUTING.md](../CONTRIBUTING.md).
+
 Lumen uses a native C++20/Qt Widgets desktop, a Go server and an Android
 Kotlin/Compose client. No embedded browser is required by the editor.
 

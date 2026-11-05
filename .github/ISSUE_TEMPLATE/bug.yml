@@ -1,0 +1,32 @@
+name: Informe de defecto
+description: Reportar un fallo reproducible en desarrollo
+title: "Bug: "
+body:
+  - type: textarea
+    id: observed
+    attributes:
+      label: Qué ocurre
+      description: Describe el comportamiento observado y el resultado esperado.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Pasos para reproducir
+      placeholder: "1. ...\n2. ...\n3. ..."
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: App, versión y entorno
+      description: Incluye sistema operativo, app y commit si se conocen.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidencia segura
+      description: Logs o capturas con datos ficticios; elimina tokens y datos personales.
+    validations:
+      required: false
