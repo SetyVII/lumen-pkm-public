@@ -1,0 +1,39 @@
+name: Propuesta de desarrollo
+description: Definir una mejora concreta para Lumen
+title: "Propuesta: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problema o necesidad
+      description: Qué necesita hacer la persona usuaria y en qué situación.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Resultado esperado
+      description: Describe un recorrido observable y cómo sabremos que funciona.
+      placeholder: "Al hacer X en el estado Y, ocurre Z..."
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Área principal
+      options:
+        - Desktop
+        - Server / API
+        - Android
+        - Browser extension
+        - Shared contract
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencias y alcance cruzado
+      description: Otras apps, contratos, diseño o cambios previos que haya que coordinar.
+    validations:
+      required: false
